@@ -156,11 +156,16 @@ missing the panel says so and points back at this menu.
   its line breaks become spaces so a wrapped message does not read as one run-together word.
 - A failed switch says what was attempted in the panel's own words and keeps ddcutil's output
   underneath it, rather than showing an exit code on its own. ddcutil's first line is followed by
-  a colon and the rest by a full stop, so a wrapped message reads as one sentence.
+  a colon and the rest by a full stop, so a wrapped message reads as one sentence. Picking a
+  display from the menu clears that failure, since the failure is what pointed at the menu.
 - A custom name is display only, and is re-checked against the closed `inputs` list when it is
   read back: wrong types, unknown keys and control characters are dropped rather than shown.
 - `names.json` is written through `FileView` with `atomicWrites`, so an interrupted write cannot
   leave a half file that parses as no names at all.
+- A write waits for that file's first read. The panel starts with empty names, so saving before
+  the read lands would overwrite the names on disk with nothing. A display picked from the menu
+  before the read also wins over the file, so a right-click in the moment the panel opens is not
+  silently undone.
 - The bar glyph is `U+F26C` (`fa-tv`) in JetBrainsMono Nerd Font. Icon names in a merged icon
   font are not guessable from the codepoint: `U+F26A` looks like a "tv" but draws a crescent.
 
