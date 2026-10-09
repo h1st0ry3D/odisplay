@@ -357,8 +357,23 @@ Panel {
      * Closing must not leave a field open on a hidden window. Watching the open
      * state covers every way out — outside click, Escape, the bar button, IPC —
      * without this panel having to shadow the base class's close().
+     *
+     * It also ends the last switch's report. The hero line describes one attempt
+     * and stops being true news once the panel is closed, and the way the panel
+     * is usually closed to reach the display menu is by closing it. Without this,
+     * a failure sits on the panel until the next switch, however long that is.
      */
-    onOpenedChanged: if (!root.opened) root.cancelRename()
+    onOpenedChanged: {
+        if (root.opened) return
+        root.cancelRename()
+        root.clearStatus()
+    }
+
+    function clearStatus() {
+        root.statusIsError = false
+        root.statusDetail = ""
+        root.statusText = "Set input source"
+    }
 
     // -- input switching
     /*
