@@ -26,7 +26,22 @@ Panel {
     // Absolute so a PATH this panel does not control cannot supply a different
     // binary. The VCP code is fixed: 0x60 is Input Source.
     readonly property string ddcutil: "/usr/bin/ddcutil"
-    readonly property var commandEnvironment: ({ "PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C" })
+
+    /*
+     * ddcutil keeps a cache of display timings, and with no HOME in this
+     * deliberately bare environment it prints two "Unable to determine dynamic
+     * sleep cache file name" lines after every failure that say nothing about the
+     * failure. Pointing it at a folder under the state directory silences them,
+     * so a failed switch reports the one thing that went wrong. ddcutil creates
+     * the folder itself on first use.
+     */
+    readonly property string ddcutilCacheHome: root.stateDir + "/cache"
+    readonly property var commandEnvironment: ({
+        "PATH": "/usr/bin:/bin",
+        "LANG": "C",
+        "LC_ALL": "C",
+        "XDG_CACHE_HOME": root.ddcutilCacheHome
+    })
 
     // An oversized reply is cut off rather than collected whole. ddcutil prints a
     // few lines or nothing, so this is a backstop, not a budget to fill.
@@ -55,8 +70,9 @@ Panel {
      * above and there is no way to edit it here, so a name cannot change what
      * the command does.
      *
-     * Held in ~/.local/state/odisplay/names.json, so a name outlives the shell
-     * and stays until it is renamed again.
+     * Held in ~/.local/state/odisplay/names.json, alongside the picked ddcutil
+     * display number, so both outlive the shell: a name stays until it is
+     * renamed again, a display stays until another one is picked.
      */
     readonly property string stateHome: Quickshell.env("XDG_STATE_HOME") || Quickshell.env("HOME") + "/.local/state"
     readonly property string stateDir: root.stateHome + "/odisplay"
@@ -70,21 +86,51 @@ Panel {
     property string renamingKey: ""
     readonly property bool renaming: root.renamingKey !== ""
 
-    // A save asked for before the state directory existed. The write goes out
-    // once mkdir has, rather than being lost.
-    property bool namesPending: false
+    // A save asked for before the state directory existed, or before the file had
+    // been read once. The write goes out once mkdir has and the read has landed,
+    // rather than being lost or landing over state this panel has not seen yet.
+    property bool statePending: false
 
-    // ddcutil's display numbers come from `ddcutil detect` and are not stable
-    // across reboots, so the index is editable rather than hard-coded.
+    // The state file has been read, or found to be missing, at least once.
+    property bool stateReady: false
+
+    /*
+     * ddcutil's display numbers come from `ddcutil detect` and are not stable
+     * across reboots, so the index is picked rather than typed: right-clicking
+     * the bar icon offers the numbers ddcutil actually prints, and nothing
+     * outside this list can reach a command.
+     */
+    readonly property var displayChoices: [1, 2, 3, 4]
+
+    // The ddcutil display every switch is sent to. Always one of displayChoices:
+    // a stored value outside the list is ignored, so this keeps whatever it
+    // already held (the default on first load).
     property int displayIndex: 1
-    property string displayIndexText: "1"
+
+    // A number was picked from the menu since this panel loaded. A read of the
+    // file that lands after that carries the older value and must not undo the
+    // pick, which is what would otherwise happen in the moment between the panel
+    // opening and its state file being read.
+    property bool displayPicked: false
 
     // Outcome of the last switch, shown in the hero line. Session only: the
     // monitor's own OSD is the source of truth for what it is showing, so nothing
     // here is stored and later re-read as if it were.
     property string statusText: "Set input source"
     property bool statusIsError: false
+    // What ddcutil actually said about a failed switch, under the sentence the
+    // hero line carries. Empty while nothing has failed.
+    property string statusDetail: ""
     property string lastSelected: ""
+
+    /*
+     * ddcutil's most common failure on this panel is a display number that has
+     * moved since the last reboot. That one gets the way out spelled out, because
+     * "Display not found" on its own says nothing about what to do.
+     */
+    readonly property bool displayMissing: root.statusIsError
+        && /\bdisplay\b/i.test(root.statusDetail)
+        && /\bnot found\b|\bno such\b|\bunknown display\b|\bfailed to find\b/i.test(root.statusDetail)
 
     // The input the in-flight switch is for, so the result is reported against the
     // right label.
@@ -97,6 +143,11 @@ Panel {
     /*
      * Strip what a rich-text renderer could act on, then cap the length, for the
      * components the shell renders itself and where textFormat cannot be set.
+     *
+     * A line break becomes a space rather than being dropped: dropping it glues
+     * the last word of one line to the first of the next into a word nobody
+     * wrote, and keeping it would break the single-line hero. Runs of
+     * whitespace collapse, so ddcutil's wrapped output reads as sentences.
      */
     function plain(value, limit) {
         var source = String(value === undefined || value === null ? "" : value)
@@ -104,34 +155,74 @@ Panel {
         for (var index = 0; index < source.length && cleaned.length < limit; index++) {
             var character = source[index]
             var code = source.charCodeAt(index)
-            var printable = code >= 0x20 && code !== 0x7f && code < 0xa0
             var notSurrogate = !(code >= 0xd800 && code <= 0xdfff)
-            if (printable && notSurrogate && character !== "<" && character !== ">" && character !== "&")
+            var printable = code >= 0x20 && code !== 0x7f && code < 0xa0
+            if (notSurrogate && (character === " " || character === "\n" || character === "\r" || character === "\t")) {
+                if (cleaned === "" || /\s$/.test(cleaned)) continue
+                cleaned += " "
+            } else if (printable && notSurrogate && character !== "<" && character !== ">" && character !== "&") {
                 cleaned += character
+            }
         }
-        return cleaned
+        return cleaned.trim()
     }
 
     /*
-     * The display number only ever becomes a decimal integer, which is what the
-     * argv array then carries. Anything else is refused rather than repaired, so a
-     * value that is not a number can never become an argument.
+     * ddcutil's own words as one sentence. Its first line says what failed and
+     * the rest says why, so the first is followed by a colon instead of running
+     * straight into the next one. Each line is stripped and capped on its own,
+     * and output already ending in punctuation is left alone.
      */
-    function validDisplayIndex(value) {
-        var text = String(value).trim()
-        if (!/^[0-9]{1,3}$/.test(text)) return false
-        var number = Number(text)
-        return isFinite(number) && number >= 1 && number <= 999
+    function sentence(value) {
+        var lines = String(value === undefined || value === null ? "" : value).split(/\r?\n/)
+        var parts = []
+        for (var index = 0; index < lines.length; index++) {
+            var line = root.plain(lines[index], 200)
+            if (line !== "") parts.push(line)
+        }
+        if (parts.length === 0) return ""
+        var head = parts[0]
+        var tail = parts.slice(1).join(" ")
+        var text = tail === "" ? head : head + (/[.!?]$/.test(head) ? " " : ": ") + tail
+        return /[.!?]$/.test(text) ? text : text + "."
     }
 
-    function commitDisplayIndex(text) {
-        root.displayIndexText = text
-        if (!root.validDisplayIndex(text)) {
-            root.statusIsError = true
-            root.statusText = "Display must be a number, 1 to 999"
-            return
+    /*
+     * The pickable displays, as a closed list. A value outside it is refused
+     * rather than repaired, so the number that reaches the command is always one
+     * of the four the menu offers and the tick always marks the number in use. A
+     * stored value outside the list is ignored, leaving the default.
+     */
+    function listedDisplay(value) {
+        return typeof value === "number" && root.displayChoices.indexOf(value) !== -1
+    }
+
+    /*
+     * One entry picked from the display menu. The choice is stored so the tick
+     * comes back after a shell restart, and the menu folds away either way — a
+     * value that is not on the list leaves the stored number alone, so the menu
+     * stays open on it.
+     */
+    function chooseDisplay(value) {
+        if (!root.listedDisplay(value)) return
+        if (value !== root.displayIndex) {
+            root.displayIndex = value
+            root.displayPicked = true
+            // A failed switch is the panel's way of pointing at this menu, so
+            // picking from it takes that hint away rather than leaving it next to
+            // the number the user just changed.
+            root.statusIsError = false
+            root.statusDetail = ""
+            root.statusText = "Using display " + value
+            root.saveState()
         }
-        root.displayIndex = Number(text)
+        displayMenu.close()
+    }
+
+    // Right-click on the bar icon. The panel does not need closing here: the
+    // bar's popout coordinator hands ownership to whichever popup opened last.
+    function toggleDisplayMenu() {
+        displayMenu.open = !displayMenu.open
     }
 
     // -- custom names
@@ -174,35 +265,54 @@ Panel {
      * exists, or carrying a value of the wrong type, is dropped rather than
      * refused: the file is a convenience, and the built-in labels are a
      * working panel without it.
+     *
+     * The stored display number is read the same way: used when it is one of the
+     * numbers on the list, ignored otherwise.
      */
-    function applyNames(raw) {
+    function applyState(raw) {
         var parsed = null
         try { parsed = JSON.parse(String(raw).trim() || "{}") } catch (e) { parsed = null }
         var kept = ({})
-        if (Util.isPlainObject(parsed) && Util.isPlainObject(parsed.names)) {
-            for (var index = 0; index < root.inputs.length; index++) {
-                var key = root.inputs[index].key
-                var value = parsed.names[key]
-                if (typeof value !== "string") continue
-                var name = root.cleanName(value)
-                if (name !== "") kept[key] = name
+        if (Util.isPlainObject(parsed)) {
+            if (Util.isPlainObject(parsed.names)) {
+                for (var index = 0; index < root.inputs.length; index++) {
+                    var key = root.inputs[index].key
+                    var value = parsed.names[key]
+                    if (typeof value !== "string") continue
+                    var name = root.cleanName(value)
+                    if (name !== "") kept[key] = name
+                }
             }
+            // Straight assignment, not chooseDisplay: reading the file must not
+            // write it straight back out.
+            if (!root.displayPicked && root.listedDisplay(parsed.display)) root.displayIndex = parsed.display
         }
         root.names = kept
     }
 
-    function saveNames() {
+    function saveState() {
         // `names` only ever holds known keys with a non-empty cleaned name —
-        // applyNames and commitName between them guarantee it — so this is the
+        // applyState and commitName between them guarantee it — so this is the
         // whole file and needs no second pass over `inputs`.
-        if (ensureStateDir.running) {
-            // First run: the folder is not there yet. The write goes out once
-            // mkdir has made it rather than failing into a name that is not
-            // there next time.
-            root.namesPending = true
+        //
+        // Writing before the file has been read once would save this panel's
+        // empty starting state over whatever is on disk, so an early save waits
+        // for the read. A missing folder waits for mkdir instead.
+        if (!root.stateReady || ensureStateDir.running) {
+            root.statePending = true
             return
         }
-        namesFile.setText(JSON.stringify({ version: 1, names: root.names }, null, 2) + "\n")
+        namesFile.setText(JSON.stringify({ version: 1, names: root.names, display: root.displayIndex }, null, 2) + "\n")
+    }
+
+    // The waiting write, once whatever it was waiting for has finished. Called
+    // from both of those, and either can be the second one to arrive, so the
+    // flag is cleared before the retry: the retry re-arms it if it is still not
+    // ready, which ends when both have happened.
+    function flushState() {
+        if (!root.statePending) return
+        root.statePending = false
+        root.saveState()
     }
 
     // Right-click on a row. One field is open at a time, so right-clicking a
@@ -229,7 +339,7 @@ Panel {
         else next[key] = name
         root.names = next
         root.endRename()
-        root.saveNames()
+        root.saveState()
     }
 
     function cancelRename() {
@@ -247,19 +357,31 @@ Panel {
      * Closing must not leave a field open on a hidden window. Watching the open
      * state covers every way out — outside click, Escape, the bar button, IPC —
      * without this panel having to shadow the base class's close().
+     *
+     * It also ends the last switch's report. The hero line describes one attempt
+     * and stops being true news once the panel is closed, and the way the panel
+     * is usually closed to reach the display menu is by closing it. Without this,
+     * a failure sits on the panel until the next switch, however long that is.
      */
-    onOpenedChanged: if (!root.opened) root.cancelRename()
+    onOpenedChanged: {
+        if (root.opened) return
+        root.cancelRename()
+        root.clearStatus()
+    }
+
+    function clearStatus() {
+        root.statusIsError = false
+        root.statusDetail = ""
+        root.statusText = "Set input source"
+    }
 
     // -- input switching
+    /*
+     * No display check here: displayIndex only changes through listedDisplay, so
+     * by the time a command is built it is one of the four numbers in the list.
+     */
     function setInput(entry) {
         if (root.busy || !entry) return
-
-        if (!root.validDisplayIndex(root.displayIndexText)) {
-            root.statusIsError = true
-            root.statusText = "Fix the display number first"
-            return
-        }
-
         root.send(entry)
     }
 
@@ -317,13 +439,18 @@ Panel {
             // Reported against the entry this call was actually for, not against
             // whatever the panel most recently selected.
             var label = root.pendingEntry ? root.labelFor(root.pendingEntry.key) : "the input"
-            var text = root.plain((failure !== "" ? failure : buffer).trim(), 200)
             if (code === 0) {
                 root.statusIsError = false
                 root.statusText = "Sent " + label
+                root.statusDetail = ""
             } else {
                 root.statusIsError = true
-                root.statusText = text !== "" ? text : "ddcutil exited with " + code
+                // The hero line carries the part a reader can act on, and ddcutil's
+                // own words go underneath in full. An exit code on its own says
+                // nothing about which of the four displays was tried.
+                root.statusText = "Could not switch to " + label + "."
+                var detail = root.sentence(failure !== "" ? failure : buffer)
+                root.statusDetail = detail !== "" ? detail : "ddcutil exited with code " + code + "."
             }
             buffer = ""
             failure = ""
@@ -351,16 +478,17 @@ Panel {
     // Nothing started here may outlive the panel.
     Component.onDestruction: if (switchProcess.running) switchProcess.signal(15)
 
-    // -- name storage
+    // -- state file
     /*
-     * ~/.local/state/odisplay/names.json.
+     * ~/.local/state/odisplay/names.json: the input names and the picked
+     * display number.
      *
-     * atomicWrites, so a shell killed mid-rename cannot leave a half-written
-     * file that parses as no names at all.
+     * atomicWrites, so a shell killed mid-write cannot leave a half-written
+     * file that parses as no state at all.
      *
-     * watchChanges, so a name edited or deleted by hand shows up without a
+     * watchChanges, so a change edited or deleted by hand shows up without a
      * restart. That also fires on this panel's own write, which is harmless:
-     * it reads back the same names that were just committed.
+     * it reads back the same state that was just committed.
      */
     FileView {
         id: namesFile
@@ -368,9 +496,17 @@ Panel {
         watchChanges: true
         atomicWrites: true
         printErrors: false
-        onLoaded: root.applyNames(text())
+        onLoaded: {
+            root.stateReady = true
+            root.applyState(text())
+            root.flushState()
+        }
         // First run: the folder does not exist yet, so there is nothing to read.
-        onLoadFailed: root.applyNames("")
+        onLoadFailed: {
+            root.stateReady = true
+            root.applyState("")
+            root.flushState()
+        }
     }
 
     /*
@@ -384,12 +520,9 @@ Panel {
         clearEnvironment: true
         onExited: function(code) {
             if (code !== 0) return
-            // Only the deferred write needs the folder. The initial read cannot:
+            // Only a deferred write needs the folder. The initial read cannot:
             // a names.json that exists means the folder already did.
-            if (root.namesPending) {
-                root.namesPending = false
-                root.saveNames()
-            }
+            root.flushState()
         }
     }
 
@@ -404,7 +537,95 @@ Panel {
         // escape: the glyph is in the private use area and does not survive being
         // pasted into a source file as a literal character.
         text: "\uf26c"
-        onPressed: root.toggle()
+        // The bar renders this on hover, which is the only place the right-click
+        // picker is advertised.
+        tooltipText: "Odisplay — right-click for the display number"
+        // Left opens the panel, right the display picker. The button reports which
+        // button was pressed, so one widget can carry both without a second target.
+        onPressed: function(button) {
+            if (button === Qt.RightButton) root.toggleDisplayMenu()
+            else root.toggle()
+        }
+    }
+
+    /*
+     * The display picker, on right-click of the bar icon.
+     *
+     * Four fixed numbers rather than a field: a typed value is a value to be
+     * validated, and this list is what ddcutil prints in practice. The tick marks
+     * the stored number, so which one is live is readable without switching.
+     *
+     * No `owner`: PopupCard.close() asks the owner to close, and the owner here
+     * would be the panel behind it, which is not what a menu selection should do.
+     */
+    PopupCard {
+        id: displayMenu
+        anchorItem: button
+        bar: root.bar
+        contentWidth: displayMenu.fittedContentWidth(Style.space(180))
+        contentHeight: displayMenu.fittedContentHeight(displayList.contentHeight)
+
+        ListView {
+            id: displayList
+            anchors.fill: parent
+            spacing: 0
+            // Four rows, so the list never needs to scroll and the mouse wheel
+            // over the popup should not be swallowed by it.
+            interactive: false
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+            model: root.displayChoices
+
+            delegate: Item {
+                id: displayRow
+                required property var modelData
+
+                width: displayList.width
+                height: Style.space(30)
+
+                Rectangle {
+                    anchors.fill: parent
+                    radius: Math.max(2, Style.cornerRadius)
+                    color: displayMouse.containsMouse
+                        ? Style.hoverFillFor(Color.popups.text, Color.accent)
+                        : "transparent"
+                }
+
+                Text {
+                    id: displayTick
+                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.left: parent.left
+                    width: Style.space(22)
+                    horizontalAlignment: Text.AlignHCenter
+                    textFormat: Text.PlainText
+                    text: root.displayIndex === displayRow.modelData ? "\u2713" : ""
+                    color: Color.popups.text
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.bodySmall
+                }
+
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.left: displayTick.right
+                    anchors.right: parent.right
+                    anchors.rightMargin: Style.space(10)
+                    textFormat: Text.PlainText
+                    text: "ddcutil display " + displayRow.modelData
+                    color: Color.popups.text
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.bodySmall
+                    elide: Text.ElideRight
+                }
+
+                MouseArea {
+                    id: displayMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.chooseDisplay(displayRow.modelData)
+                }
+            }
+        }
     }
 
     // -- panel
@@ -460,16 +681,29 @@ Panel {
                         }
                     }
 
-                    // The hero has no room for a colour cue, so an error is repeated
-                    // here in text that can actually be read.
+                    // The hero has no room for a colour cue, so the failure is
+                    // repeated here in text that can actually be read.
                     Text {
                         width: parent.width
                         visible: root.statusIsError
-                        text: root.plain(root.statusText, 120)
+                        text: root.plain(root.statusDetail, 200)
                         textFormat: Text.PlainText
                         color: "#f44"
                         font.family: Style.font.family
                         font.pixelSize: Style.font.bodySmall
+                        wrapMode: Text.WordWrap
+                    }
+
+                    // The one failure the user can fix without reading anything
+                    // else: the display number moved, and the picker changes it.
+                    Text {
+                        width: parent.width
+                        visible: root.displayMissing
+                        text: "Right-click the bar icon to pick a different display."
+                        textFormat: Text.PlainText
+                        color: Util.alpha(Color.foreground, 0.7)
+                        font.family: Style.font.family
+                        font.pixelSize: Style.font.caption
                         wrapMode: Text.WordWrap
                     }
 
@@ -559,41 +793,6 @@ Panel {
                         font.family: Style.font.family
                         font.pixelSize: Style.font.caption
                         wrapMode: Text.WordWrap
-                    }
-
-                    PanelSeparator { foreground: Color.foreground }
-
-                    // The display number is ddcutil's index from `ddcutil detect`, not
-                    // the connector name Hyprland uses. It is the one thing here that
-                    // can need changing after a reboot.
-                    Row {
-                        width: parent.width
-                        spacing: Style.space(8)
-
-                        Text {
-                            width: parent.width - displayField.width - Style.space(8)
-                            height: 30
-                            verticalAlignment: Text.AlignVCenter
-                            text: "ddcutil display"
-                            textFormat: Text.PlainText
-                            color: Util.alpha(Color.foreground, 0.7)
-                            font.family: Style.font.family
-                            font.pixelSize: Style.font.caption
-                            elide: Text.ElideRight
-                        }
-
-                        TextField {
-                            id: displayField
-                            width: Style.space(70)
-                            height: 30
-                            text: root.displayIndexText
-                            // at most three digits, which is what the validator allows
-                            maximumLength: 3
-                            font.family: Style.font.family
-                            validator: IntValidator { bottom: 1; top: 999 }
-                            onEditingFinished: root.commitDisplayIndex(text)
-                            onAccepted: root.commitDisplayIndex(text)
-                        }
                     }
                 }
             }

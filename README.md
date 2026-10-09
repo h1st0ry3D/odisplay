@@ -66,8 +66,13 @@ under your own name.
 
 Click the bar icon, then click an input. One tap sends the command.
 
-The panel shows what it sent, and whether `ddcutil` exited cleanly. That result line is session
-only.
+Right-click the bar icon to pick which ddcutil display the commands go to (see
+[The display number](#the-display-number)).
+
+The panel shows what it sent, and whether `ddcutil` exited cleanly. That result line is session only,
+and closing the panel clears it: a failure stays on screen until the next switch unless the panel
+is closed, and the panel is what you close to reach the display menu, so it would sit there
+indefinitely. Reopening starts on a clean line.
 
 ## Naming an input
 
@@ -81,9 +86,9 @@ back to the built-in label.
 
 Names are stored in `~/.local/state/odisplay/names.json`, keyed by the same `key` each input has
 in the `inputs` list, so they survive a shell restart and last until you rename the input again.
-You can also edit or delete that file by hand — the panel picks the change up straight away. A
-name that is not a readable string, or one for an input that is no longer in the list, is ignored,
-and the panel falls back to the built-in labels.
+That file holds the picked display number as well. You can edit or delete it by hand — the panel
+picks the change up straight away. A name that is not a readable string, or one for an input that
+is no longer in the list, is ignored, and the panel falls back to the built-in labels.
 
 ## Before you switch to an empty input
 
@@ -102,11 +107,18 @@ ddcutil setvcp 60 <value> --display <n>
 ```
 
 `n` is ddcutil's own index from `ddcutil detect`, not the connector name Hyprland uses, and it
-can change between reboots. That is why the panel has an editable field for it:
+can change between reboots. Right-click the bar icon and pick one of the four numbers: the entry
+with the tick is the one in use, and the choice is stored, so it comes back after a restart.
+
+The list is fixed rather than typed, so the number that reaches the command is always one of those
+four constants. It only needs to grow if `ddcutil detect` starts printing a fifth:
 
 ```bash
 ddcutil detect     # prints "Display 1 / I2C bus / DRM_connector"
 ```
+
+A number that has moved is the most common failure here, so when ddcutil reports the display as
+missing the panel says so and points back at this menu.
 
 ## Requirements
 
@@ -134,15 +146,28 @@ ddcutil detect     # prints "Display 1 / I2C bus / DRM_connector"
 
 - `ddcutil` runs as an argv array with `clearEnvironment: true` and a fixed `PATH`. No shell is
   involved, so no value is parsed twice.
+- The environment also fixes `XDG_CACHE_HOME` to a folder under the state directory. Without a
+  cache path, ddcutil prints two "Unable to determine dynamic sleep cache file name" lines after
+  every failure that have nothing to do with the failure.
 - The VCP value comes from a closed list in the source. Nothing else can reach the command.
-- The display number is validated against `^[0-9]{1,3}$` before it becomes an argument.
+- The display number comes from a closed list too, and a stored value that is not one of those
+  numbers is ignored rather than used.
 - ddcutil's output is capped at 4 KB, truncated mid-stream if it exceeds that, and the process is
   killed if it has not exited within 8 seconds.
-- Output is stripped of `<`, `>` and `&` before it reaches a label the shell renders itself.
+- Output is stripped of `<`, `>` and `&` before it reaches a label the shell renders itself, and
+  its line breaks become spaces so a wrapped message does not read as one run-together word.
+- A failed switch says what was attempted in the panel's own words and keeps ddcutil's output
+  underneath it, rather than showing an exit code on its own. ddcutil's first line is followed by
+  a colon and the rest by a full stop, so a wrapped message reads as one sentence. Picking a
+  display from the menu clears that failure, since the failure is what pointed at the menu.
 - A custom name is display only, and is re-checked against the closed `inputs` list when it is
   read back: wrong types, unknown keys and control characters are dropped rather than shown.
 - `names.json` is written through `FileView` with `atomicWrites`, so an interrupted write cannot
   leave a half file that parses as no names at all.
+- A write waits for that file's first read. The panel starts with empty names, so saving before
+  the read lands would overwrite the names on disk with nothing. A display picked from the menu
+  before the read also wins over the file, so a right-click in the moment the panel opens is not
+  silently undone.
 - The bar glyph is `U+F26C` (`fa-tv`) in JetBrainsMono Nerd Font. Icon names in a merged icon
   font are not guessable from the codepoint: `U+F26A` looks like a "tv" but draws a crescent.
 
