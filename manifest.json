@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "h1st0ry3d.odisplay",
+  "name": "Odisplay",
+  "version": "1.0.0",
+  "author": "h1st0ry3d",
+  "license": "MIT",
+  "description": "Switch a DDC/CI monitor between USB-C, DisplayPort and HDMI from the bar, using VCP feature 0x60 (Input Source)",
+  "kinds": ["bar-widget", "panel"],
+  "entryPoints": {
+    "barWidget": "Panel.qml",
+    "panel": "Panel.qml"
+  }
+}

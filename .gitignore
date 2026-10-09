@@ -1,0 +1,5 @@
+# build / editor / cache leftovers
+*.pyc
+__pycache__/
+.ruff_cache/
+.qmlcache/
