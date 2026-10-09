@@ -69,8 +69,10 @@ Click the bar icon, then click an input. One tap sends the command.
 Right-click the bar icon to pick which ddcutil display the commands go to (see
 [The display number](#the-display-number)).
 
-The panel shows what it sent, and whether `ddcutil` exited cleanly. That result line is session
-only.
+The panel shows what it sent, and whether `ddcutil` exited cleanly. That result line is session only,
+and closing the panel clears it: a failure stays on screen until the next switch unless the panel
+is closed, and the panel is what you close to reach the display menu, so it would sit there
+indefinitely. Reopening starts on a clean line.
 
 ## Naming an input
 
