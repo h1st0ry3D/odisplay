@@ -87,8 +87,8 @@ Panel {
     readonly property bool renaming: root.renamingKey !== ""
 
     // A save asked for before the state directory existed, or before the file had
-// been read once. The write goes out once mkdir has and the read has landed,
-// rather than being lost or landing over state this panel has not seen yet.
+    // been read once. The write goes out once mkdir has and the read has landed,
+    // rather than being lost or landing over state this panel has not seen yet.
     property bool statePending: false
 
     // The state file has been read, or found to be missing, at least once.
