@@ -67,7 +67,23 @@ under your own name.
 Click the bar icon, then click an input. One tap sends the command.
 
 The panel shows what it sent, and whether `ddcutil` exited cleanly. That result line is session
-only and nothing is written to disk.
+only.
+
+## Naming an input
+
+Right-click an input instead of clicking it. The button becomes a text field holding whatever
+name that input currently has. Enter saves it, Escape throws the edit away, and clicking away
+counts as saving.
+
+A name is a label and nothing else. The VCP value each button sends is still the closed list in
+`Panel.qml`, so a name cannot change what a click does. Empty the field and press Enter to go
+back to the built-in label.
+
+Names are stored in `~/.local/state/odisplay/names.json`, keyed by the same `key` each input has
+in the `inputs` list, so they survive a shell restart and last until you rename the input again.
+You can also edit or delete that file by hand — the panel picks the change up straight away. A
+name that is not a readable string, or one for an input that is no longer in the list, is ignored,
+and the panel falls back to the built-in labels.
 
 ## Before you switch to an empty input
 
@@ -123,6 +139,10 @@ ddcutil detect     # prints "Display 1 / I2C bus / DRM_connector"
 - ddcutil's output is capped at 4 KB, truncated mid-stream if it exceeds that, and the process is
   killed if it has not exited within 8 seconds.
 - Output is stripped of `<`, `>` and `&` before it reaches a label the shell renders itself.
+- A custom name is display only, and is re-checked against the closed `inputs` list when it is
+  read back: wrong types, unknown keys and control characters are dropped rather than shown.
+- `names.json` is written through `FileView` with `atomicWrites`, so an interrupted write cannot
+  leave a half file that parses as no names at all.
 - The bar glyph is `U+F26C` (`fa-tv`) in JetBrainsMono Nerd Font. Icon names in a merged icon
   font are not guessable from the codepoint: `U+F26A` looks like a "tv" but draws a crescent.
 
