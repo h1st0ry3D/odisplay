@@ -9,29 +9,61 @@ The bar icon is only a front end. It runs one program, [odisplay-cli][cli], whic
 operations: the monitor moves first, and the keyboard and mouse only move once it has. This panel
 cannot reorder that, because it never sees the individual commands.
 
+## Dependencies
+
+| | What | Why | Required |
+|---|---|---|---|
+| Panel | [`odisplay`](https://github.com/h1st0ry3D/odisplay-cli) | Does the switch, and owns the order it happens in | **Yes** |
+| Linux | [`ddcutil`](https://github.com/rockowitz/ddcutil) | Moves the monitor over DDC/CI | **Yes** |
+| Linux | [`solaar`](https://pwr-solaar.github.io/Solaar/) | Moves the Logitech keyboard and mouse | Only for the Easy-Switch buttons |
+| Build | Go 1.22 or newer | Building the CLI | To build only |
+
+There is no fallback. Without `odisplay` the buttons do nothing, and the panel says so rather than
+pretending.
+
+Without Solaar the display buttons still work. A switch that asks for a host reports that Solaar is
+missing and leaves the keyboard and mouse where they are.
+
 ## Install
 
-The plugin needs `odisplay`, and there is no fallback: without it the buttons do nothing and the
-panel says so.
+### 1. The programs it drives
 
-**1. Build the CLI.** It is a single Go binary with no dependencies outside the standard library:
+```bash
+omarchy pkg add ddcutil
+omarchy pkg add solaar      # only if you want the Easy-Switch buttons
+```
+
+Both are found at fixed absolute paths, never through `PATH`.
+
+### 2. The CLI
+
+Needs Go 1.22 or newer. It is one binary with no dependencies outside the Go standard library, so
+there is nothing to download alongside it:
 
 ```bash
 git clone https://github.com/h1st0ry3D/odisplay-cli
 cd odisplay-cli
-go build -o ~/.local/bin/odisplay ./cmd/odisplay
+go build -trimpath -o ~/.local/bin/odisplay ./cmd/odisplay
 ```
 
-`/usr/local/bin` works too if you prefer a system-wide install. The panel looks in `/usr/local/bin`
-first and `~/.local/bin` second, so either is found without configuring anything.
+`/usr/local/bin` works too, though that needs `sudo`. The panel looks in `/usr/local/bin` first and
+`~/.local/bin` second, so either is found without any configuration.
 
-**2. Check the machine is ready.** This runs nothing that touches hardware:
+### 3. Check the machine is ready
+
+This runs nothing that touches a display:
 
 ```bash
 odisplay doctor
 ```
 
-**3. Install the plugin.** It is not in the Omarchy marketplace yet. Clone it and link it in:
+It checks the programs are installed and that the display number in the config is one this machine
+actually has. **Read it before the first switch** — see
+[The display number](#the-display-number).
+
+### 4. The plugin
+
+It is not in the Omarchy marketplace yet. Clone it and link it in:
 
 ```bash
 git clone <this-repo> "$HOME/github/odisplay"
@@ -49,12 +81,35 @@ absolute path if you prefer.
 Rename the symlink and the `id` in `manifest.json`, `moduleName` and `ipcTarget` if you fork it
 under your own name.
 
-### Reinstall after changing the CLI
+### After changing the CLI
 
 ```bash
-cd ~/github/odisplay-cli && go build -o ~/.local/bin/odisplay ./cmd/odisplay
+cd ~/github/odisplay-cli && go build -trimpath -o ~/.local/bin/odisplay ./cmd/odisplay
 omarchy restart shell
 ```
+
+### Uninstall
+
+Remove the `{"id": "h1st0ry3d.odisplay"}` entry from the bar layout in `~/.config/omarchy/shell.json`
+— `omarchy bar` has no remove subcommand — then delete the plugin link and restart:
+
+```bash
+rm ~/.config/omarchy/plugins/h1st0ry3d.odisplay
+omarchy restart shell
+```
+
+`omarchy bar use defaults` resets the whole bar layout instead, which also throws away any other
+customisation you have made to it.
+
+Your settings live in the CLI's file rather than the plugin's, so they survive. Delete
+`~/.config/odisplay/odisplay.json` too if you want those gone.
+
+### If the buttons do nothing
+
+The panel says *odisplay is not installed* when it cannot find the binary, and names both paths it
+looked in. If it is installed but every switch reports that the display was not found, run
+`odisplay doctor` — that is the usual cause, and it is covered under
+[The display number](#the-display-number).
 
 ## Use
 
@@ -172,11 +227,9 @@ first device that fails, so the keyboard and mouse never end up split across two
 | 3 | The display moved but the devices did not | Gone; use the channel button |
 | 4 | A program is not installed | Depends on which one |
 
-This needs [Solaar](https://pwr-solaar.github.io/Solaar/), which nothing else here depends on:
-
-```bash
-omarchy pkg add solaar
-```
+This needs Solaar, which is the one optional dependency in the
+[table above](#dependencies). Without it every display button still works, and a switch that asks for
+a host says Solaar is missing and leaves the devices alone.
 
 ### Set the device names
 
@@ -279,16 +332,14 @@ and the others are renumbered. Run `doctor` when a switch stops working.
 A number that has moved is the most common failure here, so when `odisplay` reports the display as
 missing the panel says so and points back at this menu.
 
-## Requirements
+## Hardware
+
+The programs are in [Dependencies](#dependencies) above. This is the rest of it.
 
 - **Omarchy**, with Hyprland. Tested on Hyprland 0.56.2 and Omarchy's current `qs.Ui` component
   set.
-- **[odisplay-cli][cli]**, at `/usr/local/bin/odisplay` or `~/.local/bin/odisplay`. Required. The
-  panel reports it missing rather than doing nothing quietly.
-- **`ddcutil`**, at `/usr/bin/ddcutil`. Tested with 2.2.7. On Arch: `omarchy pkg add ddcutil`.
-- **`solaar`**, at `/usr/bin/solaar`, only if you use the Easy-Switch buttons. On Arch:
-  `omarchy pkg add solaar`. Without it the display switching still works, and the panel reports
-  that Solaar is missing instead of moving anything.
+- **A DDC/CI monitor.** Without one, the buttons report that the display cannot be switched and the
+  keyboard and mouse stay where they are.
 - **Write access to the monitor's I2C bus.** Omarchy's udev rules grant this to the active user on
   DDC-capable displays. Check yours with:
 
@@ -310,22 +361,29 @@ missing the panel says so and points back at this menu.
 - The panel runs one program. It does not know that ddcutil and Solaar exist, so it cannot put the
   monitor move after the device moves, and it cannot grow a second copy of the rule that says the
   monitor goes first.
-- Every change goes through `odisplay`, which is the only writer of the config file. The panel
-  reads the file and asks for it to be changed.
-- Commands are built as argv arrays and run without a shell, so a device name with spaces in it is
-  one argument and a name with a quote in it cannot become a second command.
+- Every change goes through `odisplay`, which is the only writer of the config file. The panel reads
+  the file and asks for it to be changed.
+- The panel builds argv arrays and runs no shell, so even the CLI's own name is never parsed twice.
+  Inside `odisplay` the same holds for what it runs: a device name with spaces in it stays one
+  argument, and a name with a quote in it cannot become a second command.
 - Children run with a fixed `PATH=/usr/bin:/bin` and an environment of their own, so nothing in your
   session can change what a program name resolves to.
-- Each call has a timeout, because ddcutil can hang when an I2C adapter goes away underneath it and
-  Solaar waits on a device that may be asleep. 8 seconds for the display, 10 for each device.
-- ddcutil's output is capped at 4 KB in the panel and 64 KB in `odisplay`, so a runaway child cannot
-  grow either one without limit.
+- `odisplay` times each call out, because ddcutil can hang when an I2C adapter goes away underneath
+  it and Solaar waits on a device that may be asleep: 8 seconds for the display, 10 for each device.
+  The panel's own 40-second watchdog is only a backstop for an `odisplay` that has wedged, and it has
+  to clear the slowest `odisplay` is allowed to be.
+- Output is capped at 4 KB in the panel and 64 KB in `odisplay`, so a runaway child cannot grow
+  either one without limit.
 - Output is stripped of `<`, `>` and `&` before it reaches a label the shell renders itself, and its
   line breaks become spaces so a wrapped message does not read as one run-together word.
 - A failed switch says what happened in the panel's own words and keeps `odisplay`'s explanation
   underneath it, rather than showing an exit code on its own. The first line is followed by a colon
   and the rest by a full stop, so a wrapped message reads as one sentence. Picking a display from the
   menu clears that failure, since the failure is what pointed at the menu.
+- Exit codes 2 and 3 are kept apart in the wording, because they mean opposite things about where
+  your keyboard is. A switch that could not move the monitor left the devices alone; a switch that
+  moved the monitor and lost the devices did not, and only the button underneath can bring them
+  back.
 - The panel checks for `odisplay` at startup and says where it looked if it is not there, rather than
   failing on the first click.
 - A change is shown on the button before `odisplay` has been asked, and the file is re-read
