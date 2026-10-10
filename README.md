@@ -86,9 +86,55 @@ back to the built-in label.
 
 Names are stored in `~/.local/state/odisplay/names.json`, keyed by the same `key` each input has
 in the `inputs` list, so they survive a shell restart and last until you rename the input again.
-That file holds the picked display number as well. You can edit or delete it by hand — the panel
-picks the change up straight away. A name that is not a readable string, or one for an input that
-is no longer in the list, is ignored, and the panel falls back to the built-in labels.
+That file holds the Easy-Switch channels and the picked display number as well. You can edit or
+delete it by hand. The panel picks the change up straight away. A name that is not a readable
+string, an Easy-Switch channel that is not `off`/`1`/`2`/`3`, or a display number outside the
+menu's list is ignored, and the panel falls back to its defaults.
+
+## Moving the keyboard and mouse with the display
+
+The small button on the right of each row picks which Easy-Switch channel the Logitech keyboard and
+mouse move to when you click that input. It reads `off`, `1`, `2` or `3`, and each click steps to
+the next one. `off` leaves the devices where they are. The setting is per input and is remembered.
+
+Hovering the button says what the value means, since the label alone is terse.
+
+With a channel set, one click does both things, in this order:
+
+1. `ddcutil setvcp 60 <value>` — the monitor moves.
+2. `solaar config <name> change-host <n>` — once per device, keyboard first, mouse last.
+
+**The display moves first on purpose.** If the `ddcutil` call fails the devices are left alone, so a
+failed switch never leaves you looking at one machine with the keyboard and mouse attached to
+another. The devices move only once the monitor has actually moved.
+
+This needs [Solaar](https://pwr-solaar.github.io/Solaar/), which nothing else here depends on:
+
+```bash
+omarchy pkg add solaar
+```
+
+### Set the device names
+
+Solaar matches a device by the exact name `solaar show` prints, and that name is not guessable. The
+same Lift is `LIFT VERTICAL ERGONOMIC MOUSE` on one unit and `LIFT For Business` on another. Run:
+
+```bash
+solaar show
+```
+
+and put your names in the `logitechDevices` list at the top of `Panel.qml`. A name that does not
+match is reported as an error in the panel rather than quietly doing nothing.
+
+### Before you use it
+
+- **Both sides need the channel paired first.** Software only selects a host that is already
+  paired; it cannot pair a new one. Pair with the switch on the device, once.
+- **The command has to run on the machine the devices are currently on.** After the switch, this
+  machine loses them until the other side switches back.
+- **If it goes wrong, the panel cannot fix it.** Once the mouse has moved the pointer is on the
+  other machine, so you cannot click back. The switch underneath the device is the only way back.
+  Test it with one device first, on a channel you have already paired.
 
 ## Before you switch to an empty input
 
@@ -125,6 +171,9 @@ missing the panel says so and points back at this menu.
 - **Omarchy**, with Hyprland. Tested on Hyprland 0.56.2 and Omarchy's current `qs.Ui` component
   set.
 - **`ddcutil`**, at `/usr/bin/ddcutil`. Tested with 2.2.7. On Arch: `omarchy pkg add ddcutil`.
+- **`solaar`**, at `/usr/bin/solaar`, only if you use the Easy-Switch buttons. On Arch:
+  `omarchy pkg add solaar`. Without it the display switching still works, and the host buttons
+  report that Solaar is missing instead of moving anything.
 - **Write access to the monitor's I2C bus.** Omarchy's udev rules grant this to the active user
   on DDC-capable displays. Check yours with:
 
@@ -162,14 +211,28 @@ missing the panel says so and points back at this menu.
   display from the menu clears that failure, since the failure is what pointed at the menu.
 - A custom name is display only, and is re-checked against the closed `inputs` list when it is
   read back: wrong types, unknown keys and control characters are dropped rather than shown.
+- An Easy-Switch channel is checked the same way, against `off`/`1`/`2`/`3`. A stored value off
+  that list is ignored rather than repaired, so the number that reaches Solaar is always one the
+  button can display.
+- `solaar` runs as an argv array from an absolute path, with `clearEnvironment: true` and the same
+  fixed `PATH` as `ddcutil`. Its device name is a constant in the source and its channel comes out
+  of the closed list, so both are settled before either becomes an argument.
+- Devices move one at a time, and the sequence stops at the first failure, so the keyboard and
+  mouse never end up split across two machines. The mouse goes last, so the pointer is still here
+  if the keyboard move is what went wrong.
+- Solaar gets 10 seconds per device and is killed after that. It is a Python program that opens
+  the receiver, and a device that is asleep, or already on another host, leaves it waiting rather
+  than failing.
 - `names.json` is written through `FileView` with `atomicWrites`, so an interrupted write cannot
   leave a half file that parses as no names at all.
 - A write waits for that file's first read. The panel starts with empty names, so saving before
   the read lands would overwrite the names on disk with nothing. A display picked from the menu
   before the read also wins over the file, so a right-click in the moment the panel opens is not
   silently undone.
-- The bar glyph is `U+F26C` (`fa-tv`) in JetBrainsMono Nerd Font. Icon names in a merged icon
-  font are not guessable from the codepoint: `U+F26A` looks like a "tv" but draws a crescent.
+- The bar glyph is `U+F26C` (`fa-tv`) in JetBrainsMono Nerd Font, and the panel's column headers
+  reuse it over the input buttons and `U+F11C` over the Easy-Switch ones. Icon names in a merged
+  icon font are not guessable from the codepoint: `U+F26A` looks like a "tv" but draws a
+  crescent, and `U+F245` is named `mouse_pointer` but draws an arrow rather than a mouse.
 
 ## License
 

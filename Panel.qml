@@ -94,6 +94,92 @@ Panel {
     // The state file has been read, or found to be missing, at least once.
     property bool stateReady: false
 
+    // -- Easy-Switch
+    /*
+     * The Logitech devices that follow a display switch.
+     *
+     * Solaar matches a device by the name `solaar show` prints, and that name
+     * cannot be guessed: the same Lift is "LIFT VERTICAL ERGONOMIC MOUSE" on one
+     * unit and "LIFT For Business" on another. So it is typed here, the same way
+     * the VCP values above are. Run
+     *
+     *   solaar show
+     *
+     * and copy the names across. A name that does not match is reported as an
+     * error rather than quietly doing nothing.
+     *
+     * The mouse is second so the pointer is still here if the keyboard move
+     * goes wrong.
+     */
+    readonly property var logitechDevices: ["MX Keys S", "LIFT VERTICAL ERGONOMIC MOUSE"]
+
+    // Absolute, like ddcutil: a PATH this panel does not control must not be
+    // able to supply a different binary.
+    readonly property string solaar: "/usr/bin/solaar"
+
+    /*
+     * How long Solaar gets per device. It is a Python program that opens the
+     * receiver, and a device that is asleep, or already on another host, leaves
+     * it waiting rather than failing.
+     */
+    readonly property int solaarTimeoutMs: 10000
+
+    /*
+     * The Easy-Switch channel for each input. "0" leaves the devices alone,
+     * which is the default and the right choice for an input that is not a
+     * Logitech machine.
+     *
+     * Stored beside the names and the display number, so every per-input
+     * setting is written together and cannot drift apart.
+     */
+    property var hosts: ({})
+
+    // What the cycle button steps through. Strings, not numbers, so a value
+    // either matches one exactly or is refused.
+    readonly property var hostChoices: ["0", "1", "2", "3"]
+
+    /*
+     * The two columns' measurements, shared by the header icons and the rows
+     * under them. A width written in both places drifts the moment one of them
+     * is edited, and the icons stop pointing at the buttons they label.
+     */
+    readonly property int hostColumnWidth: Style.space(42)
+    readonly property int columnGap: Style.space(6)
+
+    function validHost(value) {
+        return root.hostChoices.indexOf(String(value)) !== -1
+    }
+
+    function hostFor(key) {
+        return root.validHost(root.hosts[key]) ? String(root.hosts[key]) : "0"
+    }
+
+    function cycleHost(key) {
+        var index = root.hostChoices.indexOf(root.hostFor(key))
+        if (index < 0) index = 0
+        var next = root.hostChoices[(index + 1) % root.hostChoices.length]
+        var updated = Object.assign({}, root.hosts)
+        // "0" is the absence of a setting, so it is left out of the file rather
+        // than stored as a value.
+        if (next === "0") delete updated[key]
+        else updated[key] = next
+        root.hosts = updated
+        root.saveState()
+    }
+
+    /*
+     * The input the in-flight Easy-Switch is for, and which device it is on.
+     * This only starts once the display switch has already succeeded: the
+     * devices are not moved until the monitor has actually moved, so a failed
+     * ddcutil can never cost the user their keyboard and mouse.
+     */
+    property string hostPendingKey: ""
+    property int hostPendingIndex: 0
+
+    // The input's label, kept because hostPendingKey is cleared when the
+    // sequence ends and the success line still needs to name what was sent.
+    property string hostPendingLabel: ""
+
     /*
      * ddcutil's display numbers come from `ddcutil detect` and are not stable
      * across reboots, so the index is picked rather than typed: right-clicking
@@ -136,8 +222,12 @@ Panel {
     // right label.
     property var pendingEntry: null
 
-    // Only a switch disables the buttons, so the panel stays responsive.
-    readonly property bool busy: switchProcess.running
+    /*
+     * Only a switch disables the buttons, so the panel stays responsive. The
+     * Easy-Switch sequence counts as part of the same switch: taking another
+     * one mid-sequence would interleave two device moves.
+     */
+    readonly property bool busy: switchProcess.running || hostProcess.running
 
     // -- untrusted input
     /*
@@ -283,6 +373,22 @@ Panel {
                     if (name !== "") kept[key] = name
                 }
             }
+            // Only the three channels this panel cycles through. A stored value
+            // off the list is ignored rather than repaired, so the number that
+            // reaches solaar is always one the button can show.
+            var hosts = ({})
+            if (Util.isPlainObject(parsed.hosts)) {
+                for (var channel = 0; channel < root.inputs.length; channel++) {
+                    var hostKey = root.inputs[channel].key
+                    var chosen = parsed.hosts[hostKey]
+                    // Number or string, both of which a hand-edited file can
+                    // hold. Anything else, and anything off the list, is ignored.
+                    if ((typeof chosen === "string" || typeof chosen === "number")
+                        && root.validHost(chosen))
+                        hosts[hostKey] = String(chosen)
+                }
+            }
+            root.hosts = hosts
             // Straight assignment, not chooseDisplay: reading the file must not
             // write it straight back out.
             if (!root.displayPicked && root.listedDisplay(parsed.display)) root.displayIndex = parsed.display
@@ -291,8 +397,8 @@ Panel {
     }
 
     function saveState() {
-        // `names` only ever holds known keys with a non-empty cleaned name —
-        // applyState and commitName between them guarantee it — so this is the
+        // `names` only ever holds known keys with a non-empty cleaned name, which
+        // applyState and commitName between them guarantee, so this is the
         // whole file and needs no second pass over `inputs`.
         //
         // Writing before the file has been read once would save this panel's
@@ -302,7 +408,9 @@ Panel {
             root.statePending = true
             return
         }
-        namesFile.setText(JSON.stringify({ version: 1, names: root.names, display: root.displayIndex }, null, 2) + "\n")
+        namesFile.setText(JSON.stringify(
+            { version: 1, names: root.names, hosts: root.hosts, display: root.displayIndex },
+            null, 2) + "\n")
     }
 
     // The waiting write, once whatever it was waiting for has finished. Called
@@ -322,19 +430,17 @@ Panel {
         root.renamingKey = key
     }
 
-    // Enter commits (also on focus loss, which is what editingFinished reports),
-    // and Escape puts the row back. Both end the rename, and both are reachable
-    // twice for one keystroke: Enter fires accepted and editingFinished, and
-    // hiding the field fires editingFinished again. The guard on renamingKey is
-    // what makes the second one a no-op, so a cancelled rename cannot land.
+    // Enter commits, and so does focus loss, which is what editingFinished
+    // reports. Escape puts the row back. Each of those arrives twice for one
+    // keystroke, so the renamingKey guard makes the second call a no-op and a
+    // cancelled rename cannot land.
     function commitName(key, text) {
         if (root.renamingKey !== key) return
         var name = root.cleanName(text)
         // A copy, because binding invalidation needs a new object: mutating
         // `names` in place would leave the buttons showing the old name.
         var next = Object.assign({}, root.names)
-        // An empty name is a rename back to the built-in label, so the entry is
-        // removed rather than stored as an empty string.
+        // An empty name is a rename back to the built-in label.
         if (name === "") delete next[key]
         else next[key] = name
         root.names = next
@@ -355,13 +461,12 @@ Panel {
 
     /*
      * Closing must not leave a field open on a hidden window. Watching the open
-     * state covers every way out — outside click, Escape, the bar button, IPC —
-     * without this panel having to shadow the base class's close().
+     * state covers every way out: outside click, Escape, the bar button, IPC. No
+     * need for this panel to shadow the base class's close().
      *
-     * It also ends the last switch's report. The hero line describes one attempt
-     * and stops being true news once the panel is closed, and the way the panel
-     * is usually closed to reach the display menu is by closing it. Without this,
-     * a failure sits on the panel until the next switch, however long that is.
+     * It also ends the last switch's report. The hero line describes one attempt,
+     * and closing the panel is how you reach the display menu, so without this
+     * a failure sits on the panel until the next switch.
      */
     onOpenedChanged: {
         if (root.opened) return
@@ -438,24 +543,157 @@ Panel {
         onExited: function(code) {
             // Reported against the entry this call was actually for, not against
             // whatever the panel most recently selected.
-            var label = root.pendingEntry ? root.labelFor(root.pendingEntry.key) : "the input"
-            if (code === 0) {
-                root.statusIsError = false
-                root.statusText = "Sent " + label
-                root.statusDetail = ""
-            } else {
+            var entry = root.pendingEntry
+            var label = entry ? root.labelFor(entry.key) : "the input"
+            var text = failure !== "" ? failure : buffer
+            buffer = ""
+            failure = ""
+            root.pendingEntry = null
+            if (code !== 0) {
+                // The monitor did not move, so the devices are left alone.
+                // Moving them here would be the one failure that leaves the user
+                // with a screen they cannot reach.
                 root.statusIsError = true
                 // The hero line carries the part a reader can act on, and ddcutil's
                 // own words go underneath in full. An exit code on its own says
                 // nothing about which of the four displays was tried.
                 root.statusText = "Could not switch to " + label + "."
-                var detail = root.sentence(failure !== "" ? failure : buffer)
+                var detail = root.sentence(text)
                 root.statusDetail = detail !== "" ? detail : "ddcutil exited with code " + code + "."
+                return
             }
+            // A channel for this input means the devices follow the monitor. The
+            // monitor has already moved, so it is now safe to move them.
+            if (entry && root.hostFor(entry.key) !== "0") {
+                root.startHostSwitch(entry.key, label)
+                return
+            }
+            root.statusIsError = false
+            root.statusText = "Sent " + label
+            root.statusDetail = ""
+        }
+    }
+
+    // -- Easy-Switch
+    /*
+     * `solaar config <name> change-host <n>`, one device at a time.
+     *
+     * The device name is a constant in this file and the channel comes out of
+     * hostChoices, so both are known-good before they become arguments. Every
+     * element is its own argument, so no shell sees them and nothing is parsed
+     * twice. There is no shell here to quote for: Solaar takes the name as one
+     * argv element, spaces and all.
+     *
+     * A device that cannot be found, or a channel that is not paired, exits
+     * non-zero with the reason on stderr. That is reported rather than hidden,
+     * because it is exactly the case where the user has just lost their
+     * keyboard and needs to know what happened.
+     */
+    Process {
+        id: hostProcess
+        running: false
+        property string buffer: ""
+        property string failure: ""
+
+        stdout: SplitParser {
+            splitMarker: ""                 // raw chunks: the budget is counted here
+            onRead: function(chunk) {
+                if (hostProcess.buffer.length <= root.outputLimit)
+                    hostProcess.buffer += chunk
+            }
+        }
+        stderr: SplitParser {
+            splitMarker: ""
+            onRead: function(chunk) {
+                if (hostProcess.failure.length <= root.outputLimit)
+                    hostProcess.failure += chunk
+            }
+        }
+        environment: root.commandEnvironment
+        clearEnvironment: true
+
+        onExited: function(code) {
+            hostWatchdog.stop()
+            var text = root.plain((failure !== "" ? failure : buffer).trim(), 200)
             buffer = ""
             failure = ""
-            root.pendingEntry = null
+            if (code !== 0) {
+                // Stop the sequence. Half-switched devices are worse than none:
+                // the keyboard would be on another machine and the mouse not.
+                root.failHostSwitch("Host " + root.hostFor(root.hostPendingKey)
+                    + ": " + (text !== "" ? text : "solaar exited with " + code))
+                return
+            }
+            root.nextHost()
         }
+    }
+
+    /*
+     * Solaar exits in well under a second on a device that answers. This is the
+     * backstop for one that does not: a device already moved to another host is
+     * simply not there to answer, and waiting forever would leave the panel busy
+     * with no way to use it.
+     */
+    Timer {
+        id: hostWatchdog
+        interval: root.solaarTimeoutMs
+        onTriggered: if (hostProcess.running) hostProcess.signal(15)
+    }
+
+    // Start the sequence for an input whose channel is not "0". The monitor has
+    // already moved by the time this is called.
+    function startHostSwitch(key, label) {
+        root.hostPendingKey = key
+        root.hostPendingIndex = 0
+        root.hostPendingLabel = label
+        root.statusIsError = false
+        root.statusDetail = ""
+        root.statusText = "Switching devices to host " + root.hostFor(key) + " ..."
+        root.runHostDevice()
+    }
+
+    // Run the device the sequence is on, or finish if there are none left.
+    function nextHost() {
+        root.hostPendingIndex++
+        if (root.hostPendingIndex < root.logitechDevices.length) {
+            root.runHostDevice()
+            return
+        }
+        var channel = root.hostFor(root.hostPendingKey)
+        var label = root.hostPendingLabel
+        root.clearHostPending()
+        root.statusIsError = false
+        root.statusText = "Sent " + label + ", devices on host " + channel
+    }
+
+    function runHostDevice() {
+        var device = root.logitechDevices[root.hostPendingIndex]
+        var channel = root.hostFor(root.hostPendingKey)
+        // Both are settled before they become arguments: the device list is a
+        // closed constant and the channel came out of hostChoices. Neither
+        // check can fire as things stand, but a sequence that did nothing
+        // would read as a switch that worked.
+        if (!device || !root.validHost(channel)) {
+            root.failHostSwitch("No device to switch to host " + channel)
+            return
+        }
+        hostProcess.buffer = ""
+        hostProcess.failure = ""
+        hostProcess.command = [root.solaar, "config", device, "change-host", channel]
+        hostProcess.running = true
+        hostWatchdog.restart()
+    }
+
+    function failHostSwitch(message) {
+        root.clearHostPending()
+        root.statusIsError = true
+        root.statusText = message
+    }
+
+    function clearHostPending() {
+        root.hostPendingKey = ""
+        root.hostPendingIndex = 0
+        root.hostPendingLabel = ""
     }
 
     /*
@@ -476,7 +714,10 @@ Panel {
     }
 
     // Nothing started here may outlive the panel.
-    Component.onDestruction: if (switchProcess.running) switchProcess.signal(15)
+    Component.onDestruction: {
+        if (switchProcess.running) switchProcess.signal(15)
+        if (hostProcess.running) hostProcess.signal(15)
+    }
 
     // -- state file
     /*
@@ -721,6 +962,56 @@ Panel {
                      * opening next to it, so the row does not change height and the
                      * panel does not move under the pointer.
                      */
+                    /*
+                     * One header icon per column, then one row per input.
+                     *
+                     * The widths have to match the rows below, or the icons sit
+                     * over the wrong button: the label column ends where the
+                     * switch column starts, and the switch column is as wide as
+                     * the host buttons. Both come from the same two properties
+                     * the rows use, so they cannot drift apart.
+                     *
+                     * No border on the header: a box around it reads as a third
+                     * button rather than a label for two.
+                     */
+                    Item {
+                        id: headerRow
+
+                        width: parent.width
+                        height: 20
+
+                        Text {
+                            anchors.left: parent.left
+                            anchors.right: switchHeader.left
+                            anchors.rightMargin: root.columnGap
+                            anchors.verticalCenter: parent.verticalCenter
+                            // The bar icon again, so the column under it is
+                            // the same thing the bar button switches. Centred,
+                            // because the button's own label is.
+                            text: "\uf26c"
+                            textFormat: Text.PlainText
+                            color: Util.alpha(Color.foreground, 0.7)
+                            font.family: Style.font.family
+                            font.pixelSize: Style.font.body
+                            horizontalAlignment: Text.AlignHCenter
+                            elide: Text.ElideRight
+                        }
+
+                        Text {
+                            id: switchHeader
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: root.hostColumnWidth
+                            text: "\uf11c"
+                            textFormat: Text.PlainText
+                            color: Util.alpha(Color.foreground, 0.7)
+                            font.family: Style.font.family
+                            font.pixelSize: Style.font.body
+                            horizontalAlignment: Text.AlignHCenter
+                            elide: Text.ElideRight
+                        }
+                    }
+
                     Repeater {
                         model: root.inputs
 
@@ -735,10 +1026,24 @@ Panel {
                             width: parent.width
                             height: 34
 
+                            // The header icon sits above the Easy-Switch button, and
+                            // this is its width. The row's own width comes from it.
+                            readonly property int hostWidth: root.hostColumnWidth
+
+                            // A visible gap between the two buttons, so they read as
+                            // separate controls rather than one split button.
+                            readonly property int gap: root.columnGap
+
                             Button {
-                                anchors.fill: parent
+                                id: inputButton
+                                anchors.left: parent.left
+                                anchors.right: hostButton.left
+                                anchors.rightMargin: inputRow.gap
+                                anchors.top: parent.top
+                                anchors.bottom: parent.bottom
                                 visible: !inputRow.isRenaming
                                 enabled: !root.busy
+                                bordered: true
                                 text: root.labelFor(modelData.key)
                                 // Marks the input sent last. There is no confirmation
                                 // step, so this is the only feedback the panel gives.
@@ -748,8 +1053,45 @@ Panel {
                                 onRightClicked: root.renameInput(modelData.key)
                             }
 
+                            /*
+                             * Cycles this input's Easy-Switch channel: off, 1, 2, 3.
+                             *
+                             * A cycle rather than a popup on purpose. qs.Ui.Dropdown
+                             * renders its options in a separate window, and no
+                             * first-party panel puts one inside a KeyboardPanel's
+                             * layer-shell surface, where the popup can end up behind
+                             * the bar or unable to take the keys. This cannot: it is
+                             * two or three characters in the row that is already there.
+                             */
+                            Button {
+                                id: hostButton
+                                anchors.right: parent.right
+                                anchors.top: parent.top
+                                anchors.bottom: parent.bottom
+                                width: inputRow.hostWidth
+                                enabled: !root.busy
+                                bordered: true
+                                // The device set is a constant, so this only says what
+                                // will move, not what is plugged in.
+                                tooltipText: root.hostFor(modelData.key) === "0"
+                                    ? "Keyboard and mouse stay put"
+                                    : "Move keyboard and mouse to host " + root.hostFor(modelData.key)
+
+                                // The channel itself, spelled out. The tooltip carries
+                                // the long form, so the button can stay narrow.
+                                text: root.hostFor(modelData.key) === "0"
+                                    ? "off"
+                                    : root.hostFor(modelData.key)
+
+                                onClicked: root.cycleHost(modelData.key)
+                            }
+
                             TextField {
-                                anchors.fill: parent
+                                anchors.left: parent.left
+                                anchors.right: hostButton.left
+                                anchors.rightMargin: inputRow.gap
+                                anchors.top: parent.top
+                                anchors.bottom: parent.bottom
                                 visible: inputRow.isRenaming
                                 enabled: inputRow.isRenaming
                                 // Bound to nothing: the text is whatever the user
