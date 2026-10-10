@@ -9,6 +9,9 @@ The bar icon is only a front end. It runs one program, [odisplay-cli][cli], whic
 operations: the monitor moves first, and the keyboard and mouse only move once it has. This panel
 cannot reorder that, because it never sees the individual commands.
 
+The same CLI drives a [macOS menu bar app](https://github.com/h1st0ry3D/odisplay-mac), so one
+settings file works for both machines.
+
 ## Dependencies
 
 | | What | Why | Required |
