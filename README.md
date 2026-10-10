@@ -137,6 +137,7 @@ $XDG_CONFIG_HOME/odisplay/odisplay.json     # ~/.config/odisplay/odisplay.json
 {
   "version": 1,
   "display": 1,
+  "displays": { "linux": 1, "darwin": 1 },
   "inputs": [
     { "key": "usbc", "name": "Laptop", "vcp": 27, "host": "0" },
     { "key": "dp",   "name": "Mac Mini", "vcp": 15, "host": "2" },
@@ -331,6 +332,29 @@ and the others are renumbered. Run `doctor` when a switch stops working.
 
 A number that has moved is the most common failure here, so when `odisplay` reports the display as
 missing the panel says so and points back at this menu.
+
+## One settings file, two machines
+
+`display` is one number, which stops being enough the moment the same monitor is driven from more
+than one machine. ddcutil and ddcctl number displays independently, so the Dell can be display 1 on
+Linux and display 4 on the Mac.
+
+`displays` holds one number per platform:
+
+```json
+{ "display": 1, "displays": { "linux": 1, "darwin": 4 } }
+```
+
+- A platform with no entry falls back to `display`, so this is optional and a file without the key
+  behaves exactly as before.
+- Picking a display from this menu writes **this platform's** entry. Choosing it on the Mac cannot
+  change the Linux number, which is the whole point.
+- The keys are `linux` and `darwin`. A name that does not match is refused rather than ignored,
+  because `"macos"` sitting there unnoticed leaves the wrong number in charge.
+- One entry is enough for a single-machine setup, which is most people.
+
+The full rules are in the
+[CLI's config section](https://github.com/h1st0ry3D/odisplay-cli#one-file-two-machines).
 
 ## Hardware
 
