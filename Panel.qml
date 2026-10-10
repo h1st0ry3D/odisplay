@@ -240,6 +240,16 @@ Panel {
      */
     function chooseDisplay(value) {
         if (!root.listedDisplay(value)) return
+        if (root.busy) {
+            // A switch in flight is already using the old number. Changing it
+            // now would rewrite the file underneath that switch, and would
+            // overwrite the status line describing what it is doing.
+            return
+        }
+        // The bar icon opens this menu whether or not odisplay is installed, so
+        // without this the panel would clear its "not installed" error and sit
+        // there looking healthy while being unable to do anything at all.
+        if (root.cliMissing || root.cliPath === "") return
         if (value !== root.displayIndex) {
             root.applyDisplayLocally(value)
             // A failed switch is the panel's way of pointing at this menu, so
@@ -349,12 +359,26 @@ Panel {
     }
 
     // -- settings read
+    /*
+     * A read already in flight finishes rather than being restarted. Setting
+     * `running` on a Process that is already running is a no-op, so clearing
+     * the buffer here would throw away the JSON being read and then never
+     * start a replacement: the read would end truncated and be reported as a
+     * failure that never happened.
+     */
     function refreshSettings() {
         if (root.cliPath === "") return
+        if (settingsProcess.running) {
+            // Ask for another read once this one lands.
+            root.settingsAgain = true
+            return
+        }
         settingsProcess.buffer = ""
         settingsProcess.command = [root.cliPath, "list", "--json"]
         settingsProcess.running = true
     }
+
+    property bool settingsAgain: false
 
     /*
      * An empty split marker hands over raw chunks, so an oversized reply can be
@@ -380,6 +404,13 @@ Panel {
         onExited: function(code) {
             var text = settingsProcess.buffer
             settingsProcess.buffer = ""
+            // Whatever happened, a read that was asked for while this one was
+            // running still has to happen.
+            if (root.settingsAgain) {
+                root.settingsAgain = false
+                root.refreshSettings()
+                return
+            }
             if (code !== 0) {
                 root.statusIsError = true
                 root.statusText = "Could not read the odisplay settings."
@@ -544,6 +575,11 @@ Panel {
                 root.statusText = said !== "" ? root.plain(said, 80) : ("Sent " + label)
                 return
             }
+
+            // The button was marked as sent before anything ran. A switch that
+            // failed did not move the monitor, so leaving the mark there would
+            // claim the monitor is showing an input it is not.
+            root.lastSelected = ""
 
             var fallback = root.failedText(code)
             root.statusText = said !== "" ? root.plain(said, 80) : root.plain(fallback, 80)
