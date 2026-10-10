@@ -242,8 +242,9 @@ ddcutil setvcp 60 <value> --display <n>
 changes between reboots. Right-click the bar icon and pick one of the four numbers: the entry with
 the tick is the one in use, and the choice is stored, so it comes back after a restart.
 
-**Check this number before trusting the buttons.** It is positional, so a laptop panel sitting in
-the list ahead of your monitor pushes it up by one:
+**Check this number before trusting the buttons.** It is the number ddcutil itself prints, and
+ddcutil only numbers the displays it will accept — a connector it rejects gets no number at all. So a
+laptop panel sitting in the list does *not* push your monitor up by one:
 
 ```bash
 odisplay doctor
@@ -251,17 +252,29 @@ odisplay doctor
 
 ```
 displays (the config says 1):
-* display 1  card1-eDP-1   This is a laptop display.  Laptop displays do not support DDC/CI.
-  display 2  card2-DP-6    DELL S2725DC
+  (not addressable) card1-eDP-1    This is a laptop display.  Laptop displays do not support DDC/CI.
+* display 1   card2-DP-6
 
-display 1 cannot be switched: This is a laptop display.  Laptop displays do not support DDC/CI.
-Every switch will quietly do nothing, and the devices will still move.
-Display 2 (card2-DP-6) can be. Set it with `odisplay set display 2`.
+ready.
 ```
 
-That second line is the failure worth being careful about. A display number that points at the wrong
-display makes every switch a no-op while the devices still move, which is how you lose a keyboard
-with nothing obviously having gone wrong.
+The tick is on the number ddcutil would accept. If the config names something else:
+
+```
+displays (the config says 2):
+  (not addressable) card1-eDP-1    This is a laptop display.  ...
+  display 1   card2-DP-6
+
+display 2 is not one ddcutil will accept, so every switch would do nothing.
+Display 1 (card2-DP-6) is. Set it with `odisplay set display 1`.
+```
+
+That second block is the failure worth being careful about. A display number ddcutil will not accept
+makes every switch a no-op while the devices still move, which is how you lose a keyboard with
+nothing obviously having gone wrong.
+
+It still is not stable across reboots: if a display stops answering over I2C it drops out of the list
+and the others are renumbered. Run `doctor` when a switch stops working.
 
 A number that has moved is the most common failure here, so when `odisplay` reports the display as
 missing the panel says so and points back at this menu.
