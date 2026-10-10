@@ -8,12 +8,18 @@ import qs.Ui
 /*
  * Odisplay: pick a monitor input from the bar.
  *
- * The panel never talks to the monitor itself. It runs ddcutil as an argv array
- * and reads one bounded chunk of output per call.
+ * The panel does not talk to the monitor or to the Logitech receiver. It runs
+ * one program, odisplay, which owns the order of operations: the monitor moves
+ * first, and the keyboard and mouse only move once it has. That rule is the
+ * only thing here that can leave someone unable to type, so it lives in one
+ * place instead of in every caller.
  *
- * ddcutil output is untrusted input. A Text without textFormat sits on
- * Text.AutoText, which renders a string that looks like markup as rich text, and
- * rich text can load an image from a URL the string chooses.
+ * This panel never writes the settings file itself. It asks odisplay to, so
+ * there is one writer that also validates what it is given.
+ *
+ * odisplay's output is untrusted input. A Text without textFormat sits on
+ * Text.AutoText, which renders a string that looks like markup as rich text,
+ * and rich text can load an image from a URL the string chooses.
  */
 Panel {
     id: root
@@ -23,211 +29,150 @@ Panel {
     implicitWidth: button.implicitWidth
     implicitHeight: button.implicitHeight
 
-    // Absolute so a PATH this panel does not control cannot supply a different
-    // binary. The VCP code is fixed: 0x60 is Input Source.
-    readonly property string ddcutil: "/usr/bin/ddcutil"
-
+    // -- the program this panel needs
     /*
-     * ddcutil keeps a cache of display timings, and with no HOME in this
-     * deliberately bare environment it prints two "Unable to determine dynamic
-     * sleep cache file name" lines after every failure that say nothing about the
-     * failure. Pointing it at a folder under the state directory silences them,
-     * so a failed switch reports the one thing that went wrong. ddcutil creates
-     * the folder itself on first use.
+     * Where odisplay is looked for, in order. The first is the conventional
+     * place for something installed system-wide; the second needs no privileges,
+     * which is why it is here too.
      */
-    readonly property string ddcutilCacheHome: root.stateDir + "/cache"
-    readonly property var commandEnvironment: ({
-        "PATH": "/usr/bin:/bin",
-        "LANG": "C",
-        "LC_ALL": "C",
-        "XDG_CACHE_HOME": root.ddcutilCacheHome
-    })
-
-    // An oversized reply is cut off rather than collected whole. ddcutil prints a
-    // few lines or nothing, so this is a backstop, not a budget to fill.
-    readonly property int outputLimit: 4096
-    readonly property int watchdogMs: 8000
-
-    /*
-     * The three inputs, as a closed list of constants.
-     *
-     * These are the VCP 0x60 values for a Dell S2725DC. They are typed here rather
-     * than read from anywhere, so nothing needs validating on the way to the
-     * command. Other monitors number these differently: run `ddcutil capabilities`
-     * and read the values under "Feature: 60".
-     */
-    readonly property var inputs: [
-        { key: "usbc", label: "USB-C",       value: "0x1b" },
-        { key: "dp",   label: "DisplayPort", value: "0x0f" },
-        { key: "hdmi", label: "HDMI",        value: "0x11" }
+    readonly property string homeDir: Quickshell.env("HOME") || ""
+    readonly property var cliCandidates: [
+        "/usr/local/bin/odisplay",
+        root.homeDir + "/.local/bin/odisplay"
     ]
 
-    // -- custom names
-    /*
-     * Names the user gave the inputs, keyed by the same key as `inputs`.
-     *
-     * Display only. The VCP value a row sends still comes from the closed list
-     * above and there is no way to edit it here, so a name cannot change what
-     * the command does.
-     *
-     * Held in ~/.local/state/odisplay/names.json, alongside the picked ddcutil
-     * display number, so both outlive the shell: a name stays until it is
-     * renamed again, a display stays until another one is picked.
-     */
-    readonly property string stateHome: Quickshell.env("XDG_STATE_HOME") || Quickshell.env("HOME") + "/.local/state"
-    readonly property string stateDir: root.stateHome + "/odisplay"
-    readonly property string namesPath: root.stateDir + "/names.json"
-    readonly property int maxNameLength: 32
-
-    property var names: ({})
-
-    // The key of the row that is currently a text field, or "" for none. One
-    // at a time, so there is only ever one field to focus.
-    property string renamingKey: ""
-    readonly property bool renaming: root.renamingKey !== ""
-
-    // A save asked for before the state directory existed, or before the file had
-    // been read once. The write goes out once mkdir has and the read has landed,
-    // rather than being lost or landing over state this panel has not seen yet.
-    property bool statePending: false
-
-    // The state file has been read, or found to be missing, at least once.
-    property bool stateReady: false
-
-    // -- Easy-Switch
-    /*
-     * The Logitech devices that follow a display switch.
-     *
-     * Solaar matches a device by the name `solaar show` prints, and that name
-     * cannot be guessed: the same Lift is "LIFT VERTICAL ERGONOMIC MOUSE" on one
-     * unit and "LIFT For Business" on another. So it is typed here, the same way
-     * the VCP values above are. Run
-     *
-     *   solaar show
-     *
-     * and copy the names across. A name that does not match is reported as an
-     * error rather than quietly doing nothing.
-     *
-     * The mouse is second so the pointer is still here if the keyboard move
-     * goes wrong.
-     */
-    readonly property var logitechDevices: ["MX Keys S", "LIFT VERTICAL ERGONOMIC MOUSE"]
-
-    // Absolute, like ddcutil: a PATH this panel does not control must not be
-    // able to supply a different binary.
-    readonly property string solaar: "/usr/bin/solaar"
+    // Resolved once at startup. Empty until the probe finishes, so nothing is
+    // sent at a path that has not been checked.
+    property string cliPath: ""
+    property bool cliMissing: false
 
     /*
-     * How long Solaar gets per device. It is a Python program that opens the
-     * receiver, and a device that is asleep, or already on another host, leaves
-     * it waiting rather than failing.
+     * odisplay needs HOME to find its config, and XDG_CONFIG_HOME or
+     * ODISPLAY_CONFIG if the user set either. Everything else is withheld, so
+     * nothing in the session can change what a program name resolves to.
      */
-    readonly property int solaarTimeoutMs: 10000
+    readonly property var cliEnvironment: {
+        var e = ({ "PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C", "HOME": root.homeDir })
+        var configHome = Quickshell.env("XDG_CONFIG_HOME") || ""
+        var override = Quickshell.env("ODISPLAY_CONFIG") || ""
+        if (configHome !== "") e["XDG_CONFIG_HOME"] = configHome
+        if (override !== "") e["ODISPLAY_CONFIG"] = override
+        return e
+    }
+
+    /*
+     * Find odisplay, and say so plainly if it is not there. A panel whose
+     * buttons silently do nothing is the worst outcome, so this is checked at
+     * startup rather than discovered on the first click.
+     */
+    Process {
+        id: cliProbe
+        running: false
+        property int attempt: 0
+        stdout: SplitParser { onRead: function(chunk) {} }
+        stderr: SplitParser { onRead: function(chunk) {} }
+        environment: root.cliEnvironment
+        clearEnvironment: true
+        command: ["/usr/bin/test", "-x", root.cliCandidates[cliProbe.attempt]]
+
+        onExited: function(code) {
+            if (code === 0) {
+                root.cliPath = root.cliCandidates[cliProbe.attempt]
+                root.cliMissing = false
+                // The panel may have been opened while this probe was still
+                // running, and refreshSettings does nothing without a path. Read
+                // now as well, so which of the two happened first does not
+                // decide whether the panel has any rows.
+                if (!root.loadedReady) root.refreshSettings()
+                return
+            }
+            cliProbe.attempt++
+            if (cliProbe.attempt < root.cliCandidates.length) {
+                cliProbe.command = ["/usr/bin/test", "-x", root.cliCandidates[cliProbe.attempt]]
+                cliProbe.running = true
+                return
+            }
+            root.cliMissing = true
+            root.statusIsError = true
+            root.statusText = "odisplay is not installed."
+            root.statusDetail = "Put the odisplay binary at " + root.cliCandidates[0]
+                + " or " + root.cliCandidates[1] + ", then reopen the panel."
+        }
+    }
+
+    // -- settings, read back from odisplay
+    /*
+     * The inputs, hosts and display number, as odisplay reports them after
+     * validating the file. The panel renders what odisplay would send, rather
+     * than keeping its own copy of the numbers and its own idea of which are
+     * valid.
+     */
+    property var loaded: null
+    property bool loadedReady: false
+
+    readonly property var inputs: root.loadedReady && root.loaded && root.loaded.inputs
+        ? root.loaded.inputs : []
+
+    /*
+     * Built-in labels for an input the user has not named. Display only: an
+     * empty name in the file falls back to one of these, and nothing reads them
+     * as anything but a word on a button.
+     */
+    readonly property var fallbackLabels: ({
+        usbc: "USB-C",
+        dp: "DisplayPort",
+        hdmi: "HDMI"
+    })
+
+    readonly property int displayIndex: root.loadedReady && root.loaded
+        ? Math.max(1, Number(root.loaded.display) || 1) : 1
+
+    /*
+     * An oversized reply is cut off rather than collected whole. odisplay prints
+     * a few lines or nothing, so this is a backstop, not a budget to fill.
+     */
+    readonly property int outputLimit: 4096
+
+    /*
+     * odisplay enforces its own timeouts and always exits, so this is only a
+     * backstop for one that has wedged. It has to clear the worst case odisplay
+     * allows: eight seconds for the display and ten for each device, with the
+     * mouse last.
+     */
+    readonly property int watchdogMs: 40000
 
     /*
      * The Easy-Switch channel for each input. "0" leaves the devices alone,
      * which is the default and the right choice for an input that is not a
      * Logitech machine.
-     *
-     * Stored beside the names and the display number, so every per-input
-     * setting is written together and cannot drift apart.
      */
-    property var hosts: ({})
-
-    // What the cycle button steps through. Strings, not numbers, so a value
-    // either matches one exactly or is refused.
     readonly property var hostChoices: ["0", "1", "2", "3"]
-
-    /*
-     * The two columns' measurements, shared by the header icons and the rows
-     * under them. A width written in both places drifts the moment one of them
-     * is edited, and the icons stop pointing at the buttons they label.
-     */
-    readonly property int hostColumnWidth: Style.space(42)
-    readonly property int columnGap: Style.space(6)
 
     function validHost(value) {
         return root.hostChoices.indexOf(String(value)) !== -1
     }
 
+    // The channel this input is set to, with anything off the list read as off.
     function hostFor(key) {
-        return root.validHost(root.hosts[key]) ? String(root.hosts[key]) : "0"
+        for (var index = 0; index < root.inputs.length; index++) {
+            if (root.inputs[index].key !== key) continue
+            var chosen = root.inputs[index].host
+            if (chosen === undefined || chosen === null) return "0"
+            return root.validHost(chosen) ? String(chosen) : "0"
+        }
+        return "0"
     }
 
     function cycleHost(key) {
+        if (root.busy) return
         var index = root.hostChoices.indexOf(root.hostFor(key))
         if (index < 0) index = 0
         var next = root.hostChoices[(index + 1) % root.hostChoices.length]
-        var updated = Object.assign({}, root.hosts)
-        // "0" is the absence of a setting, so it is left out of the file rather
-        // than stored as a value.
-        if (next === "0") delete updated[key]
-        else updated[key] = next
-        root.hosts = updated
-        root.saveState()
+        // Shown straight away so the button answers the click; odisplay's own
+        // answer follows and wins if the two ever disagree.
+        root.applyLocally(key, "host", next)
+        root.runSet(["set", "host", key, next])
     }
-
-    /*
-     * The input the in-flight Easy-Switch is for, and which device it is on.
-     * This only starts once the display switch has already succeeded: the
-     * devices are not moved until the monitor has actually moved, so a failed
-     * ddcutil can never cost the user their keyboard and mouse.
-     */
-    property string hostPendingKey: ""
-    property int hostPendingIndex: 0
-
-    // The input's label, kept because hostPendingKey is cleared when the
-    // sequence ends and the success line still needs to name what was sent.
-    property string hostPendingLabel: ""
-
-    /*
-     * ddcutil's display numbers come from `ddcutil detect` and are not stable
-     * across reboots, so the index is picked rather than typed: right-clicking
-     * the bar icon offers the numbers ddcutil actually prints, and nothing
-     * outside this list can reach a command.
-     */
-    readonly property var displayChoices: [1, 2, 3, 4]
-
-    // The ddcutil display every switch is sent to. Always one of displayChoices:
-    // a stored value outside the list is ignored, so this keeps whatever it
-    // already held (the default on first load).
-    property int displayIndex: 1
-
-    // A number was picked from the menu since this panel loaded. A read of the
-    // file that lands after that carries the older value and must not undo the
-    // pick, which is what would otherwise happen in the moment between the panel
-    // opening and its state file being read.
-    property bool displayPicked: false
-
-    // Outcome of the last switch, shown in the hero line. Session only: the
-    // monitor's own OSD is the source of truth for what it is showing, so nothing
-    // here is stored and later re-read as if it were.
-    property string statusText: "Set input source"
-    property bool statusIsError: false
-    // What ddcutil actually said about a failed switch, under the sentence the
-    // hero line carries. Empty while nothing has failed.
-    property string statusDetail: ""
-    property string lastSelected: ""
-
-    /*
-     * ddcutil's most common failure on this panel is a display number that has
-     * moved since the last reboot. That one gets the way out spelled out, because
-     * "Display not found" on its own says nothing about what to do.
-     */
-    readonly property bool displayMissing: root.statusIsError
-        && /\bdisplay\b/i.test(root.statusDetail)
-        && /\bnot found\b|\bno such\b|\bunknown display\b|\bfailed to find\b/i.test(root.statusDetail)
-
-    // The input the in-flight switch is for, so the result is reported against the
-    // right label.
-    property var pendingEntry: null
-
-    /*
-     * Only a switch disables the buttons, so the panel stays responsive. The
-     * Easy-Switch sequence counts as part of the same switch: taking another
-     * one mid-sequence would interleave two device moves.
-     */
-    readonly property bool busy: switchProcess.running || hostProcess.running
 
     // -- untrusted input
     /*
@@ -237,7 +182,7 @@ Panel {
      * A line break becomes a space rather than being dropped: dropping it glues
      * the last word of one line to the first of the next into a word nobody
      * wrote, and keeping it would break the single-line hero. Runs of
-     * whitespace collapse, so ddcutil's wrapped output reads as sentences.
+     * whitespace collapse, so wrapped output reads as sentences.
      */
     function plain(value, limit) {
         var source = String(value === undefined || value === null ? "" : value)
@@ -258,7 +203,7 @@ Panel {
     }
 
     /*
-     * ddcutil's own words as one sentence. Its first line says what failed and
+     * odisplay's own words as one sentence. Its first line says what failed and
      * the rest says why, so the first is followed by a colon instead of running
      * straight into the next one. Each line is stripped and capped on its own,
      * and output already ending in punctuation is left alone.
@@ -278,33 +223,42 @@ Panel {
     }
 
     /*
-     * The pickable displays, as a closed list. A value outside it is refused
-     * rather than repaired, so the number that reaches the command is always one
-     * of the four the menu offers and the tick always marks the number in use. A
-     * stored value outside the list is ignored, leaving the default.
+     * ddcutil's display numbers come from `ddcutil detect` and are not stable
+     * across reboots, so the index is picked rather than typed: right-clicking
+     * the bar icon offers the numbers ddcutil actually prints, and nothing
+     * outside this list can reach odisplay.
      */
+    readonly property var displayChoices: [1, 2, 3, 4]
+
     function listedDisplay(value) {
         return typeof value === "number" && root.displayChoices.indexOf(value) !== -1
     }
 
     /*
      * One entry picked from the display menu. The choice is stored so the tick
-     * comes back after a shell restart, and the menu folds away either way — a
-     * value that is not on the list leaves the stored number alone, so the menu
-     * stays open on it.
+     * comes back after a shell restart, and the menu folds away either way.
      */
     function chooseDisplay(value) {
         if (!root.listedDisplay(value)) return
+        if (root.busy) {
+            // A switch in flight is already using the old number. Changing it
+            // now would rewrite the file underneath that switch, and would
+            // overwrite the status line describing what it is doing.
+            return
+        }
+        // The bar icon opens this menu whether or not odisplay is installed, so
+        // without this the panel would clear its "not installed" error and sit
+        // there looking healthy while being unable to do anything at all.
+        if (root.cliMissing || root.cliPath === "") return
         if (value !== root.displayIndex) {
-            root.displayIndex = value
-            root.displayPicked = true
+            root.applyDisplayLocally(value)
             // A failed switch is the panel's way of pointing at this menu, so
             // picking from it takes that hint away rather than leaving it next to
             // the number the user just changed.
             root.statusIsError = false
             root.statusDetail = ""
             root.statusText = "Using display " + value
-            root.saveState()
+            root.runSet(["set", "display", String(value)])
         }
         displayMenu.close()
     }
@@ -316,6 +270,15 @@ Panel {
     }
 
     // -- custom names
+    /*
+     * The key of the row that is currently a text field, or "" for none. One
+     * at a time, so there is only ever one field to focus.
+     */
+    property string renamingKey: ""
+    readonly property bool renaming: root.renamingKey !== ""
+
+    readonly property int maxNameLength: 32
+
     /*
      * A name is typed by the user but read back off disk, where it could have
      * been edited by anything, so it goes through this rather than straight to
@@ -341,90 +304,349 @@ Panel {
     // The name to show for an input: the user's if there is one, the built-in
     // label otherwise.
     function labelFor(key) {
-        var custom = root.names[key]
-        if (typeof custom === "string" && custom !== "") return custom
         for (var index = 0; index < root.inputs.length; index++) {
-            if (root.inputs[index].key === key) return root.inputs[index].label
+            if (root.inputs[index].key !== key) continue
+            var custom = root.inputs[index].name
+            if (typeof custom === "string" && custom !== "") return custom
+            break
         }
-        return ""
+        return root.fallbackLabels[key] || ""
     }
 
     /*
-     * Only the three keys this panel knows about are kept, and only a name
-     * that survives `cleanName`. A stale file naming an input that no longer
-     * exists, or carrying a value of the wrong type, is dropped rather than
-     * refused: the file is a convenience, and the built-in labels are a
-     * working panel without it.
-     *
-     * The stored display number is read the same way: used when it is one of the
-     * numbers on the list, ignored otherwise.
+     * Show a change before odisplay has been asked, so a button answers its
+     * click immediately. The next read replaces this wholesale, and it is
+     * reading a file odisplay has just written, so the two agree.
      */
-    function applyState(raw) {
-        var parsed = null
-        try { parsed = JSON.parse(String(raw).trim() || "{}") } catch (e) { parsed = null }
-        var kept = ({})
-        if (Util.isPlainObject(parsed)) {
-            if (Util.isPlainObject(parsed.names)) {
-                for (var index = 0; index < root.inputs.length; index++) {
-                    var key = root.inputs[index].key
-                    var value = parsed.names[key]
-                    if (typeof value !== "string") continue
-                    var name = root.cleanName(value)
-                    if (name !== "") kept[key] = name
-                }
-            }
-            // Only the three channels this panel cycles through. A stored value
-            // off the list is ignored rather than repaired, so the number that
-            // reaches solaar is always one the button can show.
-            var hosts = ({})
-            if (Util.isPlainObject(parsed.hosts)) {
-                for (var channel = 0; channel < root.inputs.length; channel++) {
-                    var hostKey = root.inputs[channel].key
-                    var chosen = parsed.hosts[hostKey]
-                    // Number or string, both of which a hand-edited file can
-                    // hold. Anything else, and anything off the list, is ignored.
-                    if ((typeof chosen === "string" || typeof chosen === "number")
-                        && root.validHost(chosen))
-                        hosts[hostKey] = String(chosen)
-                }
-            }
-            root.hosts = hosts
-            // Straight assignment, not chooseDisplay: reading the file must not
-            // write it straight back out.
-            if (!root.displayPicked && root.listedDisplay(parsed.display)) root.displayIndex = parsed.display
+    function applyLocally(key, field, value) {
+        if (!root.loaded || !root.loaded.inputs) return
+        // A copy, because binding invalidation needs a new object.
+        var next = JSON.parse(JSON.stringify(root.loaded))
+        for (var index = 0; index < next.inputs.length; index++) {
+            if (next.inputs[index].key === key) next.inputs[index][field] = value
         }
-        root.names = kept
+        root.loaded = next
     }
 
-    function saveState() {
-        // `names` only ever holds known keys with a non-empty cleaned name, which
-        // applyState and commitName between them guarantee, so this is the
-        // whole file and needs no second pass over `inputs`.
-        //
-        // Writing before the file has been read once would save this panel's
-        // empty starting state over whatever is on disk, so an early save waits
-        // for the read. A missing folder waits for mkdir instead.
-        if (!root.stateReady || ensureStateDir.running) {
-            root.statePending = true
+    function applyDisplayLocally(value) {
+        if (!root.loaded) return
+        var next = JSON.parse(JSON.stringify(root.loaded))
+        next.display = value
+        root.loaded = next
+    }
+
+    /*
+     * Closing must not leave a field open on a hidden window. Watching the open
+     * state covers every way out: outside click, Escape, the bar button, IPC.
+     *
+     * It also re-reads the settings, so a change made in a terminal shows up on
+     * the next open rather than needing a shell restart.
+     */
+    onOpenedChanged: {
+        root.cancelRename()
+        if (root.opened) {
+            root.refreshSettings()
             return
         }
-        namesFile.setText(JSON.stringify(
-            { version: 1, names: root.names, hosts: root.hosts, display: root.displayIndex },
-            null, 2) + "\n")
+        root.clearStatus()
     }
 
-    // The waiting write, once whatever it was waiting for has finished. Called
-    // from both of those, and either can be the second one to arrive, so the
-    // flag is cleared before the retry: the retry re-arms it if it is still not
-    // ready, which ends when both have happened.
-    function flushState() {
-        if (!root.statePending) return
-        root.statePending = false
-        root.saveState()
+    function clearStatus() {
+        if (root.cliMissing) return
+        root.statusIsError = false
+        root.statusDetail = ""
+        root.statusText = "Set input source"
     }
 
-    // Right-click on a row. One field is open at a time, so right-clicking a
-    // second row moves the field and abandons whatever was typed in the first.
+    // -- settings read
+    /*
+     * A read already in flight finishes rather than being restarted. Setting
+     * `running` on a Process that is already running is a no-op, so clearing
+     * the buffer here would throw away the JSON being read and then never
+     * start a replacement: the read would end truncated and be reported as a
+     * failure that never happened.
+     */
+    function refreshSettings() {
+        if (root.cliPath === "") return
+        if (settingsProcess.running) {
+            // Ask for another read once this one lands.
+            root.settingsAgain = true
+            return
+        }
+        settingsProcess.buffer = ""
+        settingsProcess.command = [root.cliPath, "list", "--json"]
+        settingsProcess.running = true
+    }
+
+    property bool settingsAgain: false
+
+    /*
+     * An empty split marker hands over raw chunks, so an oversized reply can be
+     * cut off. A line-buffered parser has to hold the whole line first.
+     */
+    Process {
+        id: settingsProcess
+        running: false
+        property string buffer: ""
+
+        stdout: SplitParser {
+            splitMarker: ""
+            onRead: function(chunk) {
+                if (settingsProcess.buffer.length <= root.outputLimit)
+                    settingsProcess.buffer += chunk
+            }
+        }
+        stderr: SplitParser { onRead: function(chunk) {} }
+        environment: root.cliEnvironment
+        clearEnvironment: true
+        command: [root.cliPath, "list", "--json"]
+
+        onExited: function(code) {
+            var text = settingsProcess.buffer
+            settingsProcess.buffer = ""
+            // Whatever happened, a read that was asked for while this one was
+            // running still has to happen.
+            if (root.settingsAgain) {
+                root.settingsAgain = false
+                root.refreshSettings()
+                return
+            }
+            if (code !== 0) {
+                root.statusIsError = true
+                root.statusText = "Could not read the odisplay settings."
+                root.statusDetail = "Run `odisplay doctor` in a terminal to see why."
+                return
+            }
+            var parsed = null
+            try { parsed = JSON.parse(String(text).trim() || "null") } catch (e) { parsed = null }
+            if (!parsed || !parsed.inputs) {
+                root.statusIsError = true
+                root.statusText = "Could not read the odisplay settings."
+                root.statusDetail = "odisplay printed something this panel does not understand."
+                return
+            }
+            root.loaded = parsed
+            root.loadedReady = true
+        }
+    }
+
+    // -- settings write
+    /*
+     * Every change goes through odisplay, which is the only writer of the file.
+     * The read afterwards is what makes the file and the panel agree; it is not
+     * an optimisation and it does not skip anything.
+     *
+     * Deliberately not refused while busy. The caller has already shown the
+     * change, so dropping the write here would leave the panel claiming
+     * something the file does not say. odisplay writes atomically, so a save
+     * running alongside a switch is not a race worth refusing.
+     */
+    function runSet(args) {
+        if (root.cliPath === "") return
+        setProcess.buffer = ""
+        setProcess.failure = ""
+        setProcess.command = [root.cliPath].concat(args)
+        setProcess.running = true
+    }
+
+    Process {
+        id: setProcess
+        running: false
+        property string buffer: ""
+        property string failure: ""
+
+        stdout: SplitParser { onRead: function(chunk) {} }
+        stderr: SplitParser {
+            splitMarker: ""
+            onRead: function(chunk) {
+                if (setProcess.failure.length <= root.outputLimit)
+                    setProcess.failure += chunk
+            }
+        }
+        environment: root.cliEnvironment
+        clearEnvironment: true
+
+        onExited: function(code) {
+            var err = root.plain(setProcess.failure.trim(), 200)
+            setProcess.buffer = ""
+            setProcess.failure = ""
+            // Re-read either way: a refused change must not stay on screen as
+            // though it took.
+            root.refreshSettings()
+            if (code === 0 || err === "") return
+            root.statusIsError = true
+            root.statusText = "Could not save that."
+            root.statusDetail = err
+        }
+    }
+
+    // -- input switching
+    /*
+     * One call. odisplay moves the monitor and then, only if that worked, the
+     * keyboard and mouse. This panel never sees the individual commands, so it
+     * cannot reorder them.
+     */
+    function setInput(entry) {
+        if (root.busy || !entry) return
+        root.send(entry)
+    }
+
+    function send(entry) {
+        if (root.busy || !entry || root.cliPath === "") return
+        root.pendingKey = entry.key
+        root.lastSelected = entry.key
+        root.statusIsError = false
+        root.statusDetail = ""
+        // The name the user gave this input, not the built-in one.
+        root.statusText = "Switching to " + root.labelFor(entry.key) + " ..."
+        odisplayProcess.buffer = ""
+        odisplayProcess.failure = ""
+        // Every element is its own argument. No shell, so nothing is parsed twice.
+        odisplayProcess.command = [root.cliPath, "switch", entry.key]
+        odisplayProcess.running = true
+        switchWatchdog.restart()
+    }
+
+    // The input the in-flight switch is for, so the result is reported against
+    // the right label.
+    property string pendingKey: ""
+
+    /*
+     * odisplay's exit codes are the contract, and two of them mean opposite
+     * things about where the user's keyboard is, so they are not flattened into
+     * one message. These are only the fallbacks: odisplay says both halves
+     * itself, in words meant for one line of a panel.
+     */
+    function failedText(code) {
+        switch (code) {
+        case 1:
+            return "odisplay could not use the settings file."
+        case 2:
+            return "Could not switch. The keyboard and mouse were left alone."
+        case 3:
+            return "The display moved but the keyboard and mouse did not. The switch underneath the mouse or keyboard is the way back."
+        case 4:
+            return "A program this needs is not installed."
+        default:
+            return "odisplay exited with code " + code + "."
+        }
+    }
+
+    Process {
+        id: odisplayProcess
+        running: false
+        property string buffer: ""
+        property string failure: ""
+
+        stdout: SplitParser {
+            splitMarker: ""
+            onRead: function(chunk) {
+                if (odisplayProcess.buffer.length <= root.outputLimit)
+                    odisplayProcess.buffer += chunk
+            }
+        }
+        stderr: SplitParser {
+            splitMarker: ""
+            onRead: function(chunk) {
+                if (odisplayProcess.failure.length <= root.outputLimit)
+                    odisplayProcess.failure += chunk
+            }
+        }
+        environment: root.cliEnvironment
+        clearEnvironment: true
+
+        onExited: function(code) {
+            switchWatchdog.stop()
+            var out = odisplayProcess.buffer
+            var err = odisplayProcess.failure
+            odisplayProcess.buffer = ""
+            odisplayProcess.failure = ""
+
+            var key = root.pendingKey
+            root.pendingKey = ""
+            var label = key !== "" ? root.labelFor(key) : "the input"
+
+            // odisplay's own sentence, already written for one line.
+            var said = root.plain(out, 120)
+            root.statusIsError = code !== 0
+            root.statusDetail = ""
+
+            if (code === 0) {
+                root.statusText = said !== "" ? root.plain(said, 80) : ("Sent " + label)
+                return
+            }
+
+            // The button was marked as sent before anything ran. A switch that
+            // failed did not move the monitor, so leaving the mark there would
+            // claim the monitor is showing an input it is not.
+            root.lastSelected = ""
+
+            var fallback = root.failedText(code)
+            root.statusText = said !== "" ? root.plain(said, 80) : root.plain(fallback, 80)
+            // The detail carries why, in full. An exit code on its own says
+            // nothing about which of the displays was tried.
+            root.statusDetail = root.plain(root.sentence(err), 200) || fallback
+        }
+    }
+
+    /*
+     * ddcutil answers a setvcp in well under a second. This is only the backstop
+     * for a call that does not come back at all, which an I2C bus can do when
+     * the adapter is taken away underneath it. odisplay has its own timeouts,
+     * so this has to clear the slowest odisplay is allowed to be.
+     */
+    Timer {
+        id: switchWatchdog
+        interval: root.watchdogMs
+        onTriggered: if (odisplayProcess.running) odisplayProcess.signal(15)
+    }
+
+    /*
+     * Outcome of the last switch, shown in the hero line. Session only: the
+     * monitor's own OSD is the source of truth for what it is showing, so
+     * nothing here is stored and later re-read as if it were.
+     */
+    property string statusText: "Set input source"
+    property bool statusIsError: false
+    // What went wrong underneath the sentence the hero line carries. Empty while
+    // nothing has failed.
+    property string statusDetail: ""
+    property string lastSelected: ""
+
+    /*
+     * ddcutil's most common failure on this panel is a display number that has
+     * moved since the last reboot. That one gets the way out spelled out, because
+     * "Display not found" on its own says nothing about what to do.
+     */
+    readonly property bool displayMissing: root.statusIsError
+        && /\bdisplay\b/i.test(root.statusDetail)
+        && /\bnot found\b|\bno displays?\b|\bno such\b|\bunknown display\b|\bfailed to find\b/i.test(root.statusDetail)
+
+    /*
+     * Only a switch or a save disables the buttons, so the panel stays
+     * responsive. Reading the settings does not: it is quick, and it runs while
+     * the panel is opening.
+     *
+     * A rename is not in here. The row being renamed has already swapped its
+     * button for a field, and making everything else unclickable while one field
+     * is open is a rule this panel did not have before.
+     */
+    readonly property bool busy: odisplayProcess.running || setProcess.running
+
+    // Nothing started here may outlive the panel.
+    Component.onDestruction: {
+        if (odisplayProcess.running) odisplayProcess.signal(15)
+        if (setProcess.running) setProcess.signal(15)
+        if (settingsProcess.running) settingsProcess.signal(15)
+    }
+
+    Component.onCompleted: cliProbe.running = true
+
+    // -- custom names
+    /*
+     * Right-click on a row. One field is open at a time, so right-clicking a
+     * second row moves the field and abandons whatever was typed in the first.
+     */
     function renameInput(key) {
         if (root.busy) return
         root.renamingKey = key
@@ -437,15 +659,11 @@ Panel {
     function commitName(key, text) {
         if (root.renamingKey !== key) return
         var name = root.cleanName(text)
-        // A copy, because binding invalidation needs a new object: mutating
-        // `names` in place would leave the buttons showing the old name.
-        var next = Object.assign({}, root.names)
-        // An empty name is a rename back to the built-in label.
-        if (name === "") delete next[key]
-        else next[key] = name
-        root.names = next
         root.endRename()
-        root.saveState()
+        // An empty name is a rename back to the built-in label, which is what
+        // removing the name from the file means.
+        root.applyLocally(key, "name", name)
+        root.runSet(["set", "name", key, name])
     }
 
     function cancelRename() {
@@ -460,314 +678,12 @@ Panel {
     }
 
     /*
-     * Closing must not leave a field open on a hidden window. Watching the open
-     * state covers every way out: outside click, Escape, the bar button, IPC. No
-     * need for this panel to shadow the base class's close().
-     *
-     * It also ends the last switch's report. The hero line describes one attempt,
-     * and closing the panel is how you reach the display menu, so without this
-     * a failure sits on the panel until the next switch.
+     * The two columns' measurements, shared by the header icons and the rows
+     * under them. A width written in both places drifts the moment one of them
+     * is edited, and the icons stop pointing at the buttons they label.
      */
-    onOpenedChanged: {
-        if (root.opened) return
-        root.cancelRename()
-        root.clearStatus()
-    }
-
-    function clearStatus() {
-        root.statusIsError = false
-        root.statusDetail = ""
-        root.statusText = "Set input source"
-    }
-
-    // -- input switching
-    /*
-     * No display check here: displayIndex only changes through listedDisplay, so
-     * by the time a command is built it is one of the four numbers in the list.
-     */
-    function setInput(entry) {
-        if (root.busy || !entry) return
-        root.send(entry)
-    }
-
-    function send(entry) {
-        if (root.busy || !entry) return
-        root.pendingEntry = entry
-        root.lastSelected = entry.key
-        root.statusIsError = false
-        // The name the user gave this input, not the built-in one.
-        root.statusText = "Switching to " + root.labelFor(entry.key) + " ..."
-        switchProcess.buffer = ""
-        switchProcess.failure = ""
-        // Every element is its own argument. No shell, so nothing is parsed twice.
-        switchProcess.command = [
-            root.ddcutil, "setvcp", "60", entry.value, "--display", String(root.displayIndex)
-        ]
-        switchProcess.running = true
-        switchWatchdog.restart()
-    }
-
-    /*
-     * An empty split marker hands over raw chunks, so an oversized reply can be cut
-     * off. A line-buffered parser has to hold the whole line first.
-     */
-    Process {
-        id: switchProcess
-        running: false
-        property string buffer: ""
-        property string failure: ""
-
-        stdout: SplitParser {
-            splitMarker: ""
-            onRead: function(chunk) { switchProcess.collect(chunk) }
-        }
-        stderr: SplitParser {
-            splitMarker: ""
-            onRead: function(chunk) {
-                if (switchProcess.failure.length <= root.outputLimit)
-                    switchProcess.failure += chunk
-            }
-        }
-        environment: root.commandEnvironment
-        clearEnvironment: true
-
-        function collect(chunk) {
-            buffer += chunk
-            if (buffer.length > root.outputLimit) {
-                buffer = ""
-                signal(15)
-                overflowTimer.start()
-            }
-        }
-
-        onExited: function(code) {
-            // Reported against the entry this call was actually for, not against
-            // whatever the panel most recently selected.
-            var entry = root.pendingEntry
-            var label = entry ? root.labelFor(entry.key) : "the input"
-            var text = failure !== "" ? failure : buffer
-            buffer = ""
-            failure = ""
-            root.pendingEntry = null
-            if (code !== 0) {
-                // The monitor did not move, so the devices are left alone.
-                // Moving them here would be the one failure that leaves the user
-                // with a screen they cannot reach.
-                root.statusIsError = true
-                // The hero line carries the part a reader can act on, and ddcutil's
-                // own words go underneath in full. An exit code on its own says
-                // nothing about which of the four displays was tried.
-                root.statusText = "Could not switch to " + label + "."
-                var detail = root.sentence(text)
-                root.statusDetail = detail !== "" ? detail : "ddcutil exited with code " + code + "."
-                return
-            }
-            // A channel for this input means the devices follow the monitor. The
-            // monitor has already moved, so it is now safe to move them.
-            if (entry && root.hostFor(entry.key) !== "0") {
-                root.startHostSwitch(entry.key, label)
-                return
-            }
-            root.statusIsError = false
-            root.statusText = "Sent " + label
-            root.statusDetail = ""
-        }
-    }
-
-    // -- Easy-Switch
-    /*
-     * `solaar config <name> change-host <n>`, one device at a time.
-     *
-     * The device name is a constant in this file and the channel comes out of
-     * hostChoices, so both are known-good before they become arguments. Every
-     * element is its own argument, so no shell sees them and nothing is parsed
-     * twice. There is no shell here to quote for: Solaar takes the name as one
-     * argv element, spaces and all.
-     *
-     * A device that cannot be found, or a channel that is not paired, exits
-     * non-zero with the reason on stderr. That is reported rather than hidden,
-     * because it is exactly the case where the user has just lost their
-     * keyboard and needs to know what happened.
-     */
-    Process {
-        id: hostProcess
-        running: false
-        property string buffer: ""
-        property string failure: ""
-
-        stdout: SplitParser {
-            splitMarker: ""                 // raw chunks: the budget is counted here
-            onRead: function(chunk) {
-                if (hostProcess.buffer.length <= root.outputLimit)
-                    hostProcess.buffer += chunk
-            }
-        }
-        stderr: SplitParser {
-            splitMarker: ""
-            onRead: function(chunk) {
-                if (hostProcess.failure.length <= root.outputLimit)
-                    hostProcess.failure += chunk
-            }
-        }
-        environment: root.commandEnvironment
-        clearEnvironment: true
-
-        onExited: function(code) {
-            hostWatchdog.stop()
-            var text = root.plain((failure !== "" ? failure : buffer).trim(), 200)
-            buffer = ""
-            failure = ""
-            if (code !== 0) {
-                // Stop the sequence. Half-switched devices are worse than none:
-                // the keyboard would be on another machine and the mouse not.
-                root.failHostSwitch("Host " + root.hostFor(root.hostPendingKey)
-                    + ": " + (text !== "" ? text : "solaar exited with " + code))
-                return
-            }
-            root.nextHost()
-        }
-    }
-
-    /*
-     * Solaar exits in well under a second on a device that answers. This is the
-     * backstop for one that does not: a device already moved to another host is
-     * simply not there to answer, and waiting forever would leave the panel busy
-     * with no way to use it.
-     */
-    Timer {
-        id: hostWatchdog
-        interval: root.solaarTimeoutMs
-        onTriggered: if (hostProcess.running) hostProcess.signal(15)
-    }
-
-    // Start the sequence for an input whose channel is not "0". The monitor has
-    // already moved by the time this is called.
-    function startHostSwitch(key, label) {
-        root.hostPendingKey = key
-        root.hostPendingIndex = 0
-        root.hostPendingLabel = label
-        root.statusIsError = false
-        root.statusDetail = ""
-        root.statusText = "Switching devices to host " + root.hostFor(key) + " ..."
-        root.runHostDevice()
-    }
-
-    // Run the device the sequence is on, or finish if there are none left.
-    function nextHost() {
-        root.hostPendingIndex++
-        if (root.hostPendingIndex < root.logitechDevices.length) {
-            root.runHostDevice()
-            return
-        }
-        var channel = root.hostFor(root.hostPendingKey)
-        var label = root.hostPendingLabel
-        root.clearHostPending()
-        root.statusIsError = false
-        root.statusText = "Sent " + label + ", devices on host " + channel
-    }
-
-    function runHostDevice() {
-        var device = root.logitechDevices[root.hostPendingIndex]
-        var channel = root.hostFor(root.hostPendingKey)
-        // Both are settled before they become arguments: the device list is a
-        // closed constant and the channel came out of hostChoices. Neither
-        // check can fire as things stand, but a sequence that did nothing
-        // would read as a switch that worked.
-        if (!device || !root.validHost(channel)) {
-            root.failHostSwitch("No device to switch to host " + channel)
-            return
-        }
-        hostProcess.buffer = ""
-        hostProcess.failure = ""
-        hostProcess.command = [root.solaar, "config", device, "change-host", channel]
-        hostProcess.running = true
-        hostWatchdog.restart()
-    }
-
-    function failHostSwitch(message) {
-        root.clearHostPending()
-        root.statusIsError = true
-        root.statusText = message
-    }
-
-    function clearHostPending() {
-        root.hostPendingKey = ""
-        root.hostPendingIndex = 0
-        root.hostPendingLabel = ""
-    }
-
-    /*
-     * ddcutil answers a setvcp in well under a second. This is the backstop for a
-     * call that does not come back at all, which an I2C bus can do when the adapter
-     * is taken away underneath it.
-     */
-    Timer {
-        id: switchWatchdog
-        interval: root.watchdogMs
-        onTriggered: if (switchProcess.running) switchProcess.signal(15)
-    }
-
-    Timer {
-        id: overflowTimer
-        interval: 2000
-        onTriggered: switchProcess.signal(9)
-    }
-
-    // Nothing started here may outlive the panel.
-    Component.onDestruction: {
-        if (switchProcess.running) switchProcess.signal(15)
-        if (hostProcess.running) hostProcess.signal(15)
-    }
-
-    // -- state file
-    /*
-     * ~/.local/state/odisplay/names.json: the input names and the picked
-     * display number.
-     *
-     * atomicWrites, so a shell killed mid-write cannot leave a half-written
-     * file that parses as no state at all.
-     *
-     * watchChanges, so a change edited or deleted by hand shows up without a
-     * restart. That also fires on this panel's own write, which is harmless:
-     * it reads back the same state that was just committed.
-     */
-    FileView {
-        id: namesFile
-        path: root.namesPath
-        watchChanges: true
-        atomicWrites: true
-        printErrors: false
-        onLoaded: {
-            root.stateReady = true
-            root.applyState(text())
-            root.flushState()
-        }
-        // First run: the folder does not exist yet, so there is nothing to read.
-        onLoadFailed: {
-            root.stateReady = true
-            root.applyState("")
-            root.flushState()
-        }
-    }
-
-    /*
-     * mkdir for the folder above, as an argv array with a fixed PATH. -p so it
-     * is a no-op once the folder is there, which is every run after the first.
-     */
-    Process {
-        id: ensureStateDir
-        command: ["/usr/bin/mkdir", "-p", root.stateDir]
-        environment: root.commandEnvironment
-        clearEnvironment: true
-        onExited: function(code) {
-            if (code !== 0) return
-            // Only a deferred write needs the folder. The initial read cannot:
-            // a names.json that exists means the folder already did.
-            root.flushState()
-        }
-    }
-
-    Component.onCompleted: ensureStateDir.running = true
+    readonly property int hostColumnWidth: Style.space(42)
+    readonly property int columnGap: Style.space(6)
 
     // -- bar button
     BarIconButton {
@@ -955,8 +871,7 @@ Panel {
                      * being renamed.
                      *
                      * qs.Ui.Button renders its own `text` with Text.PlainText, so the
-                     * label is a plain string here rather than a contentItem. Only the
-                     * name is shown; the VCP value each one sends is in the source.
+                     * label is a plain string here rather than a contentItem.
                      *
                      * Right-click renames. The field replaces the button rather than
                      * opening next to it, so the row does not change height and the
@@ -1071,17 +986,15 @@ Panel {
                                 width: inputRow.hostWidth
                                 enabled: !root.busy
                                 bordered: true
-                                // The device set is a constant, so this only says what
-                                // will move, not what is plugged in.
-                                tooltipText: root.hostFor(modelData.key) === "0"
-                                    ? "Keyboard and mouse stay put"
-                                    : "Move keyboard and mouse to host " + root.hostFor(modelData.key)
-
                                 // The channel itself, spelled out. The tooltip carries
                                 // the long form, so the button can stay narrow.
                                 text: root.hostFor(modelData.key) === "0"
                                     ? "off"
                                     : root.hostFor(modelData.key)
+
+                                tooltipText: root.hostFor(modelData.key) === "0"
+                                    ? "Keyboard and mouse stay put"
+                                    : "Move keyboard and mouse to host " + root.hostFor(modelData.key)
 
                                 onClicked: root.cycleHost(modelData.key)
                             }
@@ -1095,12 +1008,12 @@ Panel {
                                 visible: inputRow.isRenaming
                                 enabled: inputRow.isRenaming
                                 // Bound to nothing: the text is whatever the user
-                                // typed, and a binding to `names` would overwrite it
-                                // on the first keystroke. It is set when the field
+                                // typed, and a binding to the settings would overwrite
+                                // it on the first keystroke. It is set when the field
                                 // opens and read on the way out.
                                 maximumLength: root.maxNameLength
                                 font.family: Style.font.family
-                                placeholderText: modelData.label
+                                placeholderText: root.labelFor(modelData.key)
 
                                 onVisibleChanged: {
                                     if (!visible) return
