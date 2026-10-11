@@ -114,6 +114,16 @@ Panel {
         ? root.loaded.inputs : []
 
     /*
+     * The inputs a row is drawn for. A hidden one is left out here and appears
+     * in the Hide list alone, which is where it is brought back. Hiding is a
+     * view setting: the input keeps its name, its channel and its value, and
+     * `odisplay switch` still reaches it.
+     */
+    readonly property var visibleInputs: root.inputs.filter(function (input) {
+        return input.hidden !== true
+    })
+
+    /*
      * Built-in labels for an input the user has not named. Display only: an
      * empty name in the file falls back to one of these, and nothing reads them
      * as anything but a word on a button.
@@ -441,6 +451,31 @@ Panel {
      * something the file does not say. odisplay writes atomically, so a save
      * running alongside a switch is not a race worth refusing.
      */
+    // Whether an input is hidden, with anything but true read as no.
+    function isHidden(key) {
+        for (var index = 0; index < root.inputs.length; index++) {
+            if (root.inputs[index].key === key) return root.inputs[index].hidden === true
+        }
+        return false
+    }
+
+    /*
+     * Show or hide one input. It writes the setting the same way the rows write
+     * a name, so there is one writer and one set of rules about what the file
+     * may contain.
+     *
+     * The list is not closed afterwards, because hiding two inputs in a row is
+     * the ordinary thing to do with it.
+     */
+    function toggleHidden(key) {
+        if (root.busy || root.cliMissing || root.cliPath === "") return
+        var hidden = !root.isHidden(key)
+        // Shown straight away so the tick answers the click; odisplay's own
+        // answer follows and wins if the two ever disagree.
+        root.applyLocally(key, "hidden", hidden)
+        root.runSet(["set", "hidden", key, hidden ? "on" : "off"])
+    }
+
     function runSet(args) {
         if (root.cliPath === "") return
         setProcess.buffer = ""
@@ -683,6 +718,10 @@ Panel {
      * is edited, and the icons stop pointing at the buttons they label.
      */
     readonly property int hostColumnWidth: Style.space(42)
+    // One row of the bar icon's menu. Written once because the two lists in it
+    // are sized from it, and a height that disagreed with the rows would clip
+    // them.
+    readonly property int menuRowHeight: Style.space(30)
     readonly property int columnGap: Style.space(6)
 
     // -- bar button
@@ -720,14 +759,23 @@ Panel {
         anchorItem: button
         bar: root.bar
         contentWidth: displayMenu.fittedContentWidth(Style.space(180))
-        contentHeight: displayMenu.fittedContentHeight(displayList.contentHeight)
+        contentHeight: displayMenu.fittedContentHeight(displayColumn.implicitHeight)
+
+        Column {
+            id: displayColumn
+            width: parent.width
+            spacing: 0
 
         ListView {
             id: displayList
-            anchors.fill: parent
+            width: parent.width
+            // Sized from the model rather than from its own content: a height
+            // that depends on contentHeight which depends on height is a
+            // binding loop, and the row height is a constant anyway.
+            height: root.menuRowHeight * root.displayChoices.length
             spacing: 0
-            // Four rows, so the list never needs to scroll and the mouse wheel
-            // over the popup should not be swallowed by it.
+            // So short a list never needs to scroll, and the mouse wheel over
+            // the popup should not be swallowed by it.
             interactive: false
             clip: true
             boundsBehavior: Flickable.StopAtBounds
@@ -782,6 +830,91 @@ Panel {
                     onClicked: root.chooseDisplay(displayRow.modelData)
                 }
             }
+        }
+
+        /*
+         * Hiding, under the display numbers and built the same way: a tick on
+         * the ones that are hidden, and a click to turn it on or off.
+         *
+         * Every input is listed, not only the hidden ones. A list that shrank as
+         * things were hidden would have no way back to the ones already gone,
+         * and hiding the input you are on is the case this is for.
+         */
+        PanelSeparator { foreground: Color.popups.foreground }
+
+        Text {
+            width: parent.width
+            height: root.menuRowHeight
+            verticalAlignment: Text.AlignVCenter
+            leftPadding: Style.space(8)
+            textFormat: Text.PlainText
+            text: "Hide:"
+            color: Util.alpha(Color.popups.text, 0.7)
+            font.family: Style.font.family
+            font.pixelSize: Style.font.bodySmall
+        }
+
+        ListView {
+            id: hideList
+            width: parent.width
+            height: root.menuRowHeight * root.inputs.length
+            spacing: 0
+            interactive: false
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+            model: root.inputs
+
+            delegate: Item {
+                id: hideRow
+                required property var modelData
+
+                width: hideList.width
+                height: root.menuRowHeight
+
+                Rectangle {
+                    anchors.fill: parent
+                    radius: Math.max(2, Style.cornerRadius)
+                    color: hideMouse.containsMouse
+                        ? Style.hoverFillFor(Color.popups.text, Color.accent)
+                        : "transparent"
+                }
+
+                Text {
+                    id: hideTick
+                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.left: parent.left
+                    width: Style.space(22)
+                    horizontalAlignment: Text.AlignHCenter
+                    textFormat: Text.PlainText
+                    text: hideRow.modelData.hidden === true ? "\u2713" : ""
+                    color: Color.popups.text
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.bodySmall
+                }
+
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.left: hideTick.right
+                    anchors.right: parent.right
+                    anchors.rightMargin: Style.space(10)
+                    textFormat: Text.PlainText
+                    text: root.labelFor(hideRow.modelData.key)
+                    color: Color.popups.text
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.bodySmall
+                    elide: Text.ElideRight
+                }
+
+                MouseArea {
+                    id: hideMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.toggleHidden(hideRow.modelData.key)
+                }
+            }
+        }
+
         }
     }
 
@@ -928,7 +1061,7 @@ Panel {
                     }
 
                     Repeater {
-                        model: root.inputs
+                        model: root.visibleInputs
 
                         Item {
                             id: inputRow

@@ -121,7 +121,13 @@ Click the bar icon, then click an input. One tap sends the command.
 Right-click the bar icon to pick which ddcutil display the commands go to (see
 [The display number](#the-display-number)).
 
-Right-click an input instead of clicking it to rename it.
+Right-click an input instead of clicking it to rename it. Right-click the bar icon for the display
+number and, under it, **Hide:** — a tick per input, and a click to turn it on or off.
+
+Hiding leaves an input out of the panel without removing it. The input keeps its name, its channel
+and its value, and `odisplay switch` still reaches it, so hiding the one you are currently on is a
+reasonable thing to do. The Hide list always shows every input, so a hidden one is one click from
+coming back.
 
 The panel shows what `odisplay` said, in one line, with the reason underneath when it went wrong.
 That result line is session only, and closing the panel clears it: a failure stays on screen until
