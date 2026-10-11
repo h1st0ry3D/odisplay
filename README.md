@@ -84,12 +84,40 @@ absolute path if you prefer.
 Rename the symlink and the `id` in `manifest.json`, `moduleName` and `ipcTarget` if you fork it
 under your own name.
 
-### After changing the CLI
+### Updating
+
+The CLI comes first. It is where the order of operations lives and where every
+setting is stored, so a plugin from a newer commit can want a setting the
+installed CLI does not know about.
 
 ```bash
-cd ~/github/odisplay-cli && go build -trimpath -o ~/.local/bin/odisplay ./cmd/odisplay
+# 1. The CLI
+cd ~/github/odisplay-cli
+git pull
+go build -trimpath -o ~/.local/bin/odisplay ./cmd/odisplay
+
+# 2. The plugin
+cd ~/github/odisplay
+git pull
+
+# 3. The shell, to pick the plugin up
 omarchy restart shell
 ```
+
+Then have a look:
+
+```bash
+odisplay doctor        # the programs are installed and the display number works
+odisplay list          # the inputs, the channels, and the devices it can see
+```
+
+`odisplay list` is worth reading after an update, because it is the one place a
+setting that only shows up on screen can be seen from a terminal.
+
+**If `omarchy restart shell` refuses**, the session is locked and the running
+shell is older than the files on disk. Unlock, or log out and back in. The
+plugin's QML is read at startup, so until it restarts the panel is the old one
+whatever the checkout says.
 
 ### Uninstall
 
