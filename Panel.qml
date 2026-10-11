@@ -754,6 +754,27 @@ Panel {
      * No `owner`: PopupCard.close() asks the owner to close, and the owner here
      * would be the panel behind it, which is not what a menu selection should do.
      */
+    /*
+     * The heading over a group of rows in the bar icon's menu.
+     *
+     * Dimmed and in capitals, which is what tells it apart from the rows under
+     * it: the rows are things to click and this is a label for them, and it is
+     * the only one of the two that cannot be clicked. The text is written as a
+     * word and capitalised here, so a heading added later lands in the same
+     * shape without anyone having to remember to shout it.
+     */
+    component MenuHeading: Text {
+        width: parent.width
+        height: root.menuRowHeight
+        verticalAlignment: Text.AlignVCenter
+        leftPadding: Style.space(8)
+        textFormat: Text.PlainText
+        color: Util.alpha(Color.popups.text, 0.7)
+        font.family: Style.font.family
+        font.pixelSize: Style.font.bodySmall
+        font.capitalization: Font.AllUppercase
+    }
+
     PopupCard {
         id: displayMenu
         anchorItem: button
@@ -765,6 +786,8 @@ Panel {
             id: displayColumn
             width: parent.width
             spacing: 0
+
+        MenuHeading { text: "ddcutil:" }
 
         ListView {
             id: displayList
@@ -815,7 +838,7 @@ Panel {
                     anchors.right: parent.right
                     anchors.rightMargin: Style.space(10)
                     textFormat: Text.PlainText
-                    text: "ddcutil display " + displayRow.modelData
+                    text: "Display " + displayRow.modelData
                     color: Color.popups.text
                     font.family: Style.font.family
                     font.pixelSize: Style.font.bodySmall
@@ -842,17 +865,7 @@ Panel {
          */
         PanelSeparator { foreground: Color.popups.foreground }
 
-        Text {
-            width: parent.width
-            height: root.menuRowHeight
-            verticalAlignment: Text.AlignVCenter
-            leftPadding: Style.space(8)
-            textFormat: Text.PlainText
-            text: "Hide:"
-            color: Util.alpha(Color.popups.text, 0.7)
-            font.family: Style.font.family
-            font.pixelSize: Style.font.bodySmall
-        }
+        MenuHeading { text: "hide:" }
 
         ListView {
             id: hideList
