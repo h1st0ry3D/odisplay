@@ -1,7 +1,11 @@
 # Odisplay
 
-Switch a monitor between USB-C, DisplayPort and HDMI from the Omarchy bar, and take the Logitech
-keyboard and mouse with you when you do.
+A software KVM in the Omarchy bar. One click changes the monitor's input source and moves the
+Logitech keyboard and mouse to the machine that input belongs to, so three computers on one monitor
+are one click apart instead of a reach for a button underneath the mouse.
+
+It does what a KVM switch does without the box. USB-C, DisplayPort and HDMI are the three inputs a
+KVM switch would have, and the keyboard and mouse follow whichever one you pick.
 
 ![the panel](preview.png)
 
@@ -61,7 +65,7 @@ odisplay doctor
 ```
 
 It checks the programs are installed and that the display number in the config is one this machine
-actually has. **Read it before the first switch** — see
+actually has. Read it before the first switch. See
 [The display number](#the-display-number).
 
 ### 4. The plugin
@@ -114,7 +118,7 @@ odisplay list          # the inputs, the channels, and the devices it can see
 `odisplay list` is worth reading after an update, because it is the one place a
 setting that only shows up on screen can be seen from a terminal.
 
-**If `omarchy restart shell` refuses**, the session is locked and the running
+If `omarchy restart shell` refuses, the session is locked and the running
 shell is older than the files on disk. Unlock, or log out and back in. The
 plugin's QML is read at startup, so until it restarts the panel is the old one
 whatever the checkout says.
@@ -122,7 +126,7 @@ whatever the checkout says.
 ### Uninstall
 
 Remove the `{"id": "h1st0ry3d.odisplay"}` entry from the bar layout in `~/.config/omarchy/shell.json`
-— `omarchy bar` has no remove subcommand — then delete the plugin link and restart:
+Note that `omarchy bar` has no remove subcommand. Then delete the plugin link and restart:
 
 ```bash
 rm ~/.config/omarchy/plugins/h1st0ry3d.odisplay
@@ -139,7 +143,7 @@ Your settings live in the CLI's file rather than the plugin's, so they survive. 
 
 The panel says *odisplay is not installed* when it cannot find the binary, and names both paths it
 looked in. If it is installed but every switch reports that the display was not found, run
-`odisplay doctor` — that is the usual cause, and it is covered under
+`odisplay doctor`, which is the usual cause and is covered under
 [The display number](#the-display-number).
 
 ## Use
@@ -150,7 +154,7 @@ Right-click the bar icon to pick which ddcutil display the commands go to (see
 [The display number](#the-display-number)).
 
 Right-click an input instead of clicking it to rename it. Right-click the bar icon for the display
-number and, under it, **Hide:** — a tick per input, and a click to turn it on or off.
+number and, under it, Hide: with a tick per input and a click to turn it on or off.
 
 Hiding leaves an input out of the panel without removing it. The input keeps its name, its channel
 and its value, and `odisplay switch` still reaches it, so hiding the one you are currently on is a
@@ -203,13 +207,13 @@ means the wrong display number and the wrong hosts.
 
 ### Which monitor this was built for
 
-**Dell S2725DC**, 27-inch QHD, model number `61815`.
+Dell S2725DC, 27-inch QHD, model number `61815`.
 
 | Panel button | VCP `0x60` value | Where the value comes from |
 |---|---|---|
 | DisplayPort | `0x0f` (15) | Advertised in the EDID as `DisplayPort-1` |
 | HDMI | `0x11` (17) | Advertised in the EDID as `HDMI-1` |
-| USB-C | `0x1b` (27) | **Not in the advertised list.** Found by testing. |
+| USB-C | `0x1b` (27) | Not in the advertised list. Found by testing. |
 
 Two things about that table are worth knowing before you trust it on a different panel.
 
@@ -223,7 +227,7 @@ Feature: 60 (Input Source)
       11: HDMI-1
 ```
 
-**For another monitor**, run `ddcutil capabilities` and read the values under `Feature: 60`, then
+For another monitor, run `ddcutil capabilities` and read the values under `Feature: 60`, then
 put them in the `inputs` list in the config file. Values differ between manufacturers. `vcp` is
 stored as a plain decimal number: 15, 17, 27.
 
@@ -247,8 +251,8 @@ Hovering the button says what the value means, since the label alone is terse.
 
 With a channel set, one click does both things, in this order:
 
-1. `ddcutil setvcp 60 <value> --display <n>` — the monitor moves.
-2. `solaar config <name> change-host <n>` — once per device, mouse first.
+1. `ddcutil setvcp 60 <value> --display <n>` moves the monitor.
+2. `solaar config <name> change-host <n>` runs once per device, mouse first.
 
 **The display moves first on purpose.** If the `ddcutil` call fails the devices are left alone, so a
 failed switch never leaves you looking at one machine with the keyboard and mouse attached to
@@ -283,24 +287,24 @@ same Lift is `LIFT VERTICAL ERGONOMIC MOUSE` on one unit and `LIFT For Business`
 solaar show
 ```
 
-and put your names in the `devices` list in the config file, in the order they should be sent —
-mouse first by default. A name that does not match is reported as an error rather than quietly
+and put your names in the `devices` list in the config file, in the order they should be sent.
+The mouse is first by default. A name that does not match is reported as an error rather than quietly
 doing nothing.
 
 ### Watch out for this
 
-**Host 2 on the keyboard and host 2 on the mouse can be different machines.** The channel names come
+Host 2 on the keyboard and host 2 on the mouse can be different machines. The channel names come
 from whatever paired the devices, so a keyboard paired with one machine and a mouse paired with
 another will each go where they were paired. If they disagree, set them to the same number on a
 machine that both are paired with.
 
 ### Before you use it
 
-- **Both sides need the channel paired first.** Software only selects a host that is already
+- Both sides need the channel paired first. Software only selects a host that is already
   paired; it cannot pair a new one. Pair with the switch on the device, once.
-- **The command has to run on the machine the devices are currently on.** After the switch, this
+- The command has to run on the machine the devices are currently on. After the switch, this
   machine loses them until the other side switches back.
-- **Try it without the mouse first.** Set one input's channel while the other two are `off`, or set
+- Try it without the mouse first. Set one input's channel while the other two are `off`, or set
   the channel to a machine you can reach by hand. The panel cannot undo this once it has happened:
   once the mouse has moved the pointer is on the other machine, so you cannot click back.
 
@@ -339,8 +343,8 @@ ddcutil setvcp 60 <value> --display <n>
 changes between reboots. Right-click the bar icon and pick one of the four numbers: the entry with
 the tick is the one in use, and the choice is stored, so it comes back after a restart.
 
-**Check this number before trusting the buttons.** It is the number ddcutil itself prints, and
-ddcutil only numbers the displays it will accept — a connector it rejects gets no number at all. So a
+Check this number before trusting the buttons. It is the number ddcutil itself prints, and
+ddcutil only numbers the displays it will accept, and a connector it rejects gets no number at all. So a
 laptop panel sitting in the list does *not* push your monitor up by one:
 
 ```bash
@@ -390,7 +394,7 @@ Linux and display 4 on the Mac.
 
 - A platform with no entry falls back to `display`, so this is optional and a file without the key
   behaves exactly as before.
-- Picking a display from this menu writes **this platform's** entry. Choosing it on the Mac cannot
+- Picking a display from this menu writes this platform's entry. Choosing it on the Mac cannot
   change the Linux number, which is the whole point.
 - The keys are `linux` and `darwin`. A name that does not match is refused rather than ignored,
   because `"macos"` sitting there unnoticed leaves the wrong number in charge.
@@ -403,11 +407,11 @@ The full rules are in the
 
 The programs are in [Dependencies](#dependencies) above. This is the rest of it.
 
-- **Omarchy**, with Hyprland. Tested on Hyprland 0.56.2 and Omarchy's current `qs.Ui` component
+- Omarchy, with Hyprland. Tested on Hyprland 0.56.2 and Omarchy's current `qs.Ui` component
   set.
-- **A DDC/CI monitor.** Without one, the buttons report that the display cannot be switched and the
+- A DDC/CI monitor. Without one, the buttons report that the display cannot be switched and the
   keyboard and mouse stay where they are.
-- **Write access to the monitor's I2C bus.** Omarchy's udev rules grant this to the active user on
+- Write access to the monitor's I2C bus. Omarchy's udev rules grant this to the active user on
   DDC-capable displays. Check yours with:
 
   ```bash
@@ -420,7 +424,7 @@ The programs are in [Dependencies](#dependencies) above. This is the rest of it.
 
   `odisplay` runs `ddcutil` as your own user and has no privilege escalation. If the bus is not
   writable, the panel reports ddcutil's error and nothing is sent.
-- A DisplayPort or HDMI connection. **VRR (FreeSync) works over DisplayPort only**, so switching to
+- A DisplayPort or HDMI connection. VRR (FreeSync) works over DisplayPort only, so switching to
   HDMI disables FreeSync no matter how Hyprland is configured.
 
 ## Design notes
