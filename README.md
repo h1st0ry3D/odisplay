@@ -214,12 +214,17 @@ Hovering the button says what the value means, since the label alone is terse.
 With a channel set, one click does both things, in this order:
 
 1. `ddcutil setvcp 60 <value> --display <n>` — the monitor moves.
-2. `solaar config <name> change-host <n>` — once per device, keyboard first, mouse last.
+2. `solaar config <name> change-host <n>` — once per device, mouse first.
 
 **The display moves first on purpose.** If the `ddcutil` call fails the devices are left alone, so a
 failed switch never leaves you looking at one machine with the keyboard and mouse attached to
 another. The devices move only once the monitor has actually moved, and the sequence stops at the
 first device that fails, so the keyboard and mouse never end up split across two machines.
+
+The devices are sent in the order `devices` lists them, and the mouse is first by default. The
+order decides what a failure leaves you holding, since the sequence stops at the first one that
+fails: mouse first means a keyboard that will not move leaves the pointer here. Swap the two lines
+in the settings file to send the keyboard first.
 
 `odisplay` reports which of those happened, through its exit code, and the panel shows it in words:
 
@@ -244,8 +249,9 @@ same Lift is `LIFT VERTICAL ERGONOMIC MOUSE` on one unit and `LIFT For Business`
 solaar show
 ```
 
-and put your names in the `devices` list in the config file, keyboard first and mouse last. A name
-that does not match is reported as an error rather than quietly doing nothing.
+and put your names in the `devices` list in the config file, in the order they should be sent —
+mouse first by default. A name that does not match is reported as an error rather than quietly
+doing nothing.
 
 ### Watch out for this
 
