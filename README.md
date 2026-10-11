@@ -1,15 +1,175 @@
 # Odisplay
 
-Switch a monitor between USB-C, DisplayPort and HDMI from the Omarchy bar, using the MCCS
-standard VCP feature `0x60` (Input Source).
+Switch a monitor between USB-C, DisplayPort and HDMI from the Omarchy bar, and take the Logitech
+keyboard and mouse with you when you do.
 
 ![the panel](preview.png)
 
-## Which monitor this was built for
+The bar icon is only a front end. It runs one program, [odisplay-cli][cli], which owns the order of
+operations: the monitor moves first, and the keyboard and mouse only move once it has. This panel
+cannot reorder that, because it never sees the individual commands.
+
+The same CLI drives a [macOS menu bar app](https://github.com/h1st0ry3D/odisplay-mac), so one
+settings file works for both machines.
+
+## Dependencies
+
+| | What | Why | Required |
+|---|---|---|---|
+| Panel | [`odisplay`](https://github.com/h1st0ry3D/odisplay-cli) | Does the switch, and owns the order it happens in | **Yes** |
+| Linux | [`ddcutil`](https://github.com/rockowitz/ddcutil) | Moves the monitor over DDC/CI | **Yes** |
+| Linux | [`solaar`](https://pwr-solaar.github.io/Solaar/) | Moves the Logitech keyboard and mouse | Only for the Easy-Switch buttons |
+| Build | Go 1.22 or newer | Building the CLI | To build only |
+
+There is no fallback. Without `odisplay` the buttons do nothing, and the panel says so rather than
+pretending.
+
+Without Solaar the display buttons still work. A switch that asks for a host reports that Solaar is
+missing and leaves the keyboard and mouse where they are.
+
+## Install
+
+### 1. The programs it drives
+
+```bash
+omarchy pkg add ddcutil
+omarchy pkg add solaar      # only if you want the Easy-Switch buttons
+```
+
+Both are found at fixed absolute paths, never through `PATH`.
+
+### 2. The CLI
+
+Needs Go 1.22 or newer. It is one binary with no dependencies outside the Go standard library, so
+there is nothing to download alongside it:
+
+```bash
+git clone https://github.com/h1st0ry3D/odisplay-cli
+cd odisplay-cli
+go build -trimpath -o ~/.local/bin/odisplay ./cmd/odisplay
+```
+
+`/usr/local/bin` works too, though that needs `sudo`. The panel looks in `/usr/local/bin` first and
+`~/.local/bin` second, so either is found without any configuration.
+
+### 3. Check the machine is ready
+
+This runs nothing that touches a display:
+
+```bash
+odisplay doctor
+```
+
+It checks the programs are installed and that the display number in the config is one this machine
+actually has. **Read it before the first switch** — see
+[The display number](#the-display-number).
+
+### 4. The plugin
+
+It is not in the Omarchy marketplace yet. Clone it and link it in:
+
+```bash
+git clone <this-repo> "$HOME/github/odisplay"
+
+# Relative target, so the link survives a different username or home directory.
+ln -sfn ../../../github/odisplay "$HOME/.config/omarchy/plugins/h1st0ry3d.odisplay"
+
+omarchy bar put h1st0ry3d.odisplay --section right
+omarchy restart shell
+```
+
+Adjust the number of `../` segments if you clone somewhere else, or replace the link with an
+absolute path if you prefer.
+
+Rename the symlink and the `id` in `manifest.json`, `moduleName` and `ipcTarget` if you fork it
+under your own name.
+
+### After changing the CLI
+
+```bash
+cd ~/github/odisplay-cli && go build -trimpath -o ~/.local/bin/odisplay ./cmd/odisplay
+omarchy restart shell
+```
+
+### Uninstall
+
+Remove the `{"id": "h1st0ry3d.odisplay"}` entry from the bar layout in `~/.config/omarchy/shell.json`
+— `omarchy bar` has no remove subcommand — then delete the plugin link and restart:
+
+```bash
+rm ~/.config/omarchy/plugins/h1st0ry3d.odisplay
+omarchy restart shell
+```
+
+`omarchy bar use defaults` resets the whole bar layout instead, which also throws away any other
+customisation you have made to it.
+
+Your settings live in the CLI's file rather than the plugin's, so they survive. Delete
+`~/.config/odisplay/odisplay.json` too if you want those gone.
+
+### If the buttons do nothing
+
+The panel says *odisplay is not installed* when it cannot find the binary, and names both paths it
+looked in. If it is installed but every switch reports that the display was not found, run
+`odisplay doctor` — that is the usual cause, and it is covered under
+[The display number](#the-display-number).
+
+## Use
+
+Click the bar icon, then click an input. One tap sends the command.
+
+Right-click the bar icon to pick which ddcutil display the commands go to (see
+[The display number](#the-display-number)).
+
+Right-click an input instead of clicking it to rename it.
+
+The panel shows what `odisplay` said, in one line, with the reason underneath when it went wrong.
+That result line is session only, and closing the panel clears it: a failure stays on screen until
+the next switch unless the panel is closed, and the panel is what you close to reach the display
+menu, so it would sit there indefinitely. Reopening starts on a clean line.
+
+## Settings
+
+One file, owned by `odisplay`:
+
+```
+$XDG_CONFIG_HOME/odisplay/odisplay.json     # ~/.config/odisplay/odisplay.json
+```
+
+```json
+{
+  "version": 1,
+  "display": 1,
+  "displays": { "linux": 1, "darwin": 1 },
+  "inputs": [
+    { "key": "usbc", "name": "Laptop", "vcp": 27, "host": "0" },
+    { "key": "dp",   "name": "Mac Mini", "vcp": 15, "host": "2" },
+    { "key": "hdmi", "name": "PC", "vcp": 17, "host": "3" }
+  ],
+  "devices": ["MX Keys S", "LIFT VERTICAL ERGONOMIC MOUSE"]
+}
+```
+
+The panel reads it and asks `odisplay` to change it. It never writes the file itself, so there is
+one writer that also validates what it is given. You can edit it by hand too, and the panel picks
+the change up the next time you open it.
+
+From a terminal:
+
+```bash
+odisplay list                              # show what is configured
+odisplay set name dp "Mac Mini"            # rename a button
+odisplay set host dp 2                     # set the Easy-Switch channel
+odisplay set display 2                     # set the ddcutil display number
+odisplay path                              # print the config file's location
+```
+
+A file that will not parse is refused rather than replaced with the defaults, because a typo there
+means the wrong display number and the wrong hosts.
+
+### Which monitor this was built for
 
 **Dell S2725DC**, 27-inch QHD, model number `61815`.
-
-The three VCP values in `Panel.qml` come from that panel's EDID:
 
 | Panel button | VCP `0x60` value | Where the value comes from |
 |---|---|---|
@@ -29,67 +189,19 @@ Feature: 60 (Input Source)
       11: HDMI-1
 ```
 
-**For another monitor**, run `ddcutil capabilities` and read the values under `Feature: 60`,
-then edit the `inputs` list at the top of `Panel.qml`. Values differ between manufacturers.
+**For another monitor**, run `ddcutil capabilities` and read the values under `Feature: 60`, then
+put them in the `inputs` list in the config file. Values differ between manufacturers. `vcp` is
+stored as a plain decimal number: 15, 17, 27.
 
-## Check your monitor can do this at all
+### Naming an input
 
-```bash
-ddcutil detect
-ddcutil capabilities --display 1 | grep -A6 'Feature: 60'
-```
+Right-click an input instead of clicking it. The button becomes a text field holding whatever name
+that input currently has. Enter saves it, Escape throws the edit away, and clicking away counts as
+saving.
 
-If `Feature: 60` is missing, the monitor's firmware does not expose input switching over DDC/CI
-and no value will work.
-
-## Install
-
-This plugin is not in the Omarchy marketplace yet. Clone it and link it in:
-
-```bash
-git clone <this-repo> "$HOME/github/odisplay"
-
-# Relative target, so the link survives a different username or home directory.
-ln -sfn ../../../github/odisplay "$HOME/.config/omarchy/plugins/h1st0ry3d.odisplay"
-
-omarchy bar put h1st0ry3d.odisplay --section right
-omarchy restart shell
-```
-
-Adjust the number of `../` segments if you clone somewhere else, or replace the link with an
-absolute path if you prefer.
-
-Rename the symlink and the `id` in `manifest.json`, `moduleName` and `ipcTarget` if you fork it
-under your own name.
-
-## Use
-
-Click the bar icon, then click an input. One tap sends the command.
-
-Right-click the bar icon to pick which ddcutil display the commands go to (see
-[The display number](#the-display-number)).
-
-The panel shows what it sent, and whether `ddcutil` exited cleanly. That result line is session only,
-and closing the panel clears it: a failure stays on screen until the next switch unless the panel
-is closed, and the panel is what you close to reach the display menu, so it would sit there
-indefinitely. Reopening starts on a clean line.
-
-## Naming an input
-
-Right-click an input instead of clicking it. The button becomes a text field holding whatever
-name that input currently has. Enter saves it, Escape throws the edit away, and clicking away
-counts as saving.
-
-A name is a label and nothing else. The VCP value each button sends is still the closed list in
-`Panel.qml`, so a name cannot change what a click does. Empty the field and press Enter to go
-back to the built-in label.
-
-Names are stored in `~/.local/state/odisplay/names.json`, keyed by the same `key` each input has
-in the `inputs` list, so they survive a shell restart and last until you rename the input again.
-That file holds the Easy-Switch channels and the picked display number as well. You can edit or
-delete it by hand. The panel picks the change up straight away. A name that is not a readable
-string, an Easy-Switch channel that is not `off`/`1`/`2`/`3`, or a display number outside the
-menu's list is ignored, and the panel falls back to its defaults.
+A name is a label and nothing else. The VCP value each button sends still comes from `vcp` in the
+config, and there is no way to edit it from the panel, so a name cannot change what a click does.
+Empty the field and press Enter to go back to the built-in label.
 
 ## Moving the keyboard and mouse with the display
 
@@ -101,18 +213,27 @@ Hovering the button says what the value means, since the label alone is terse.
 
 With a channel set, one click does both things, in this order:
 
-1. `ddcutil setvcp 60 <value>` — the monitor moves.
+1. `ddcutil setvcp 60 <value> --display <n>` — the monitor moves.
 2. `solaar config <name> change-host <n>` — once per device, keyboard first, mouse last.
 
 **The display moves first on purpose.** If the `ddcutil` call fails the devices are left alone, so a
 failed switch never leaves you looking at one machine with the keyboard and mouse attached to
-another. The devices move only once the monitor has actually moved.
+another. The devices move only once the monitor has actually moved, and the sequence stops at the
+first device that fails, so the keyboard and mouse never end up split across two machines.
 
-This needs [Solaar](https://pwr-solaar.github.io/Solaar/), which nothing else here depends on:
+`odisplay` reports which of those happened, through its exit code, and the panel shows it in words:
 
-```bash
-omarchy pkg add solaar
-```
+| Exit | What it means | Where your keyboard is |
+|---|---|---|
+| 0 | Done | Where you sent it |
+| 1 | Settings or usage problem | Unchanged |
+| 2 | The display did not move, so the devices were left alone | Still here |
+| 3 | The display moved but the devices did not | Gone; use the channel button |
+| 4 | A program is not installed | Depends on which one |
+
+This needs Solaar, which is the one optional dependency in the
+[table above](#dependencies). Without it every display button still works, and a switch that asks for
+a host says Solaar is missing and leaves the devices alone.
 
 ### Set the device names
 
@@ -123,8 +244,15 @@ same Lift is `LIFT VERTICAL ERGONOMIC MOUSE` on one unit and `LIFT For Business`
 solaar show
 ```
 
-and put your names in the `logitechDevices` list at the top of `Panel.qml`. A name that does not
-match is reported as an error in the panel rather than quietly doing nothing.
+and put your names in the `devices` list in the config file, keyboard first and mouse last. A name
+that does not match is reported as an error rather than quietly doing nothing.
+
+### Watch out for this
+
+**Host 2 on the keyboard and host 2 on the mouse can be different machines.** The channel names come
+from whatever paired the devices, so a keyboard paired with one machine and a mouse paired with
+another will each go where they were paired. If they disagree, set them to the same number on a
+machine that both are paired with.
 
 ### Before you use it
 
@@ -132,9 +260,24 @@ match is reported as an error in the panel rather than quietly doing nothing.
   paired; it cannot pair a new one. Pair with the switch on the device, once.
 - **The command has to run on the machine the devices are currently on.** After the switch, this
   machine loses them until the other side switches back.
-- **If it goes wrong, the panel cannot fix it.** Once the mouse has moved the pointer is on the
-  other machine, so you cannot click back. The switch underneath the device is the only way back.
-  Test it with one device first, on a channel you have already paired.
+- **Try it without the mouse first.** Set one input's channel while the other two are `off`, or set
+  the channel to a machine you can reach by hand. The panel cannot undo this once it has happened:
+  once the mouse has moved the pointer is on the other machine, so you cannot click back.
+
+### Try it before you trust it
+
+`odisplay` can print every command it would run without running any of them:
+
+```bash
+odisplay switch dp --dry-run
+```
+
+```
+Mac Mini, to linux, would run:
+/usr/bin/ddcutil setvcp 60 0x0f --display 1
+/usr/bin/solaar config 'MX Keys S' change-host 2
+/usr/bin/solaar config 'LIFT VERTICAL ERGONOMIC MOUSE' change-host 2
+```
 
 ## Before you switch to an empty input
 
@@ -146,94 +289,139 @@ A single tap sends the command, so confirm each cable carries a signal first.
 
 ## The display number
 
-The panel runs:
+`odisplay` runs:
 
 ```bash
 ddcutil setvcp 60 <value> --display <n>
 ```
 
 `n` is ddcutil's own index from `ddcutil detect`, not the connector name Hyprland uses, and it
-can change between reboots. Right-click the bar icon and pick one of the four numbers: the entry
-with the tick is the one in use, and the choice is stored, so it comes back after a restart.
+changes between reboots. Right-click the bar icon and pick one of the four numbers: the entry with
+the tick is the one in use, and the choice is stored, so it comes back after a restart.
 
-The list is fixed rather than typed, so the number that reaches the command is always one of those
-four constants. It only needs to grow if `ddcutil detect` starts printing a fifth:
+**Check this number before trusting the buttons.** It is the number ddcutil itself prints, and
+ddcutil only numbers the displays it will accept — a connector it rejects gets no number at all. So a
+laptop panel sitting in the list does *not* push your monitor up by one:
 
 ```bash
-ddcutil detect     # prints "Display 1 / I2C bus / DRM_connector"
+odisplay doctor
 ```
 
-A number that has moved is the most common failure here, so when ddcutil reports the display as
+```
+displays (the config says 1):
+  (not addressable) card1-eDP-1    This is a laptop display.  Laptop displays do not support DDC/CI.
+* display 1   card2-DP-6
+
+ready.
+```
+
+The tick is on the number ddcutil would accept. If the config names something else:
+
+```
+displays (the config says 2):
+  (not addressable) card1-eDP-1    This is a laptop display.  ...
+  display 1   card2-DP-6
+
+display 2 is not one ddcutil will accept, so every switch would do nothing.
+Display 1 (card2-DP-6) is. Set it with `odisplay set display 1`.
+```
+
+That second block is the failure worth being careful about. A display number ddcutil will not accept
+makes every switch a no-op while the devices still move, which is how you lose a keyboard with
+nothing obviously having gone wrong.
+
+It still is not stable across reboots: if a display stops answering over I2C it drops out of the list
+and the others are renumbered. Run `doctor` when a switch stops working.
+
+A number that has moved is the most common failure here, so when `odisplay` reports the display as
 missing the panel says so and points back at this menu.
 
-## Requirements
+## One settings file, two machines
+
+`display` is one number, which stops being enough the moment the same monitor is driven from more
+than one machine. ddcutil and ddcctl number displays independently, so the Dell can be display 1 on
+Linux and display 4 on the Mac.
+
+`displays` holds one number per platform:
+
+```json
+{ "display": 1, "displays": { "linux": 1, "darwin": 4 } }
+```
+
+- A platform with no entry falls back to `display`, so this is optional and a file without the key
+  behaves exactly as before.
+- Picking a display from this menu writes **this platform's** entry. Choosing it on the Mac cannot
+  change the Linux number, which is the whole point.
+- The keys are `linux` and `darwin`. A name that does not match is refused rather than ignored,
+  because `"macos"` sitting there unnoticed leaves the wrong number in charge.
+- One entry is enough for a single-machine setup, which is most people.
+
+The full rules are in the
+[CLI's config section](https://github.com/h1st0ry3D/odisplay-cli#one-file-two-machines).
+
+## Hardware
+
+The programs are in [Dependencies](#dependencies) above. This is the rest of it.
 
 - **Omarchy**, with Hyprland. Tested on Hyprland 0.56.2 and Omarchy's current `qs.Ui` component
   set.
-- **`ddcutil`**, at `/usr/bin/ddcutil`. Tested with 2.2.7. On Arch: `omarchy pkg add ddcutil`.
-- **`solaar`**, at `/usr/bin/solaar`, only if you use the Easy-Switch buttons. On Arch:
-  `omarchy pkg add solaar`. Without it the display switching still works, and the host buttons
-  report that Solaar is missing instead of moving anything.
-- **Write access to the monitor's I2C bus.** Omarchy's udev rules grant this to the active user
-  on DDC-capable displays. Check yours with:
+- **A DDC/CI monitor.** Without one, the buttons report that the display cannot be switched and the
+  keyboard and mouse stay where they are.
+- **Write access to the monitor's I2C bus.** Omarchy's udev rules grant this to the active user on
+  DDC-capable displays. Check yours with:
 
   ```bash
   ddcutil detect     # find your monitor, then read the I2C bus on its own Display block
   getfacl /dev/i2c-19  # does that bus list your user?
   ```
 
-  `ddcutil detect` prints a bus for every connector it finds, including the laptop panel, so
-  use the one in the same block as your monitor's model number.
+  `ddcutil detect` prints a bus for every connector it finds, including the laptop panel, so use
+  the one in the same block as your monitor's model number.
 
-  This panel runs `ddcutil` as your own user and has no privilege escalation. If the bus is not
-  writable, the buttons report ddcutil's error and nothing is sent.
-
-- A DisplayPort or HDMI connection. **VRR (FreeSync) works over DisplayPort only**, so switching
-  to HDMI disables FreeSync no matter how Hyprland is configured.
+  `odisplay` runs `ddcutil` as your own user and has no privilege escalation. If the bus is not
+  writable, the panel reports ddcutil's error and nothing is sent.
+- A DisplayPort or HDMI connection. **VRR (FreeSync) works over DisplayPort only**, so switching to
+  HDMI disables FreeSync no matter how Hyprland is configured.
 
 ## Design notes
 
-- `ddcutil` runs as an argv array with `clearEnvironment: true` and a fixed `PATH`. No shell is
-  involved, so no value is parsed twice.
-- The environment also fixes `XDG_CACHE_HOME` to a folder under the state directory. Without a
-  cache path, ddcutil prints two "Unable to determine dynamic sleep cache file name" lines after
-  every failure that have nothing to do with the failure.
-- The VCP value comes from a closed list in the source. Nothing else can reach the command.
-- The display number comes from a closed list too, and a stored value that is not one of those
-  numbers is ignored rather than used.
-- ddcutil's output is capped at 4 KB, truncated mid-stream if it exceeds that, and the process is
-  killed if it has not exited within 8 seconds.
-- Output is stripped of `<`, `>` and `&` before it reaches a label the shell renders itself, and
-  its line breaks become spaces so a wrapped message does not read as one run-together word.
-- A failed switch says what was attempted in the panel's own words and keeps ddcutil's output
-  underneath it, rather than showing an exit code on its own. ddcutil's first line is followed by
-  a colon and the rest by a full stop, so a wrapped message reads as one sentence. Picking a
-  display from the menu clears that failure, since the failure is what pointed at the menu.
-- A custom name is display only, and is re-checked against the closed `inputs` list when it is
-  read back: wrong types, unknown keys and control characters are dropped rather than shown.
-- An Easy-Switch channel is checked the same way, against `off`/`1`/`2`/`3`. A stored value off
-  that list is ignored rather than repaired, so the number that reaches Solaar is always one the
-  button can display.
-- `solaar` runs as an argv array from an absolute path, with `clearEnvironment: true` and the same
-  fixed `PATH` as `ddcutil`. Its device name is a constant in the source and its channel comes out
-  of the closed list, so both are settled before either becomes an argument.
-- Devices move one at a time, and the sequence stops at the first failure, so the keyboard and
-  mouse never end up split across two machines. The mouse goes last, so the pointer is still here
-  if the keyboard move is what went wrong.
-- Solaar gets 10 seconds per device and is killed after that. It is a Python program that opens
-  the receiver, and a device that is asleep, or already on another host, leaves it waiting rather
-  than failing.
-- `names.json` is written through `FileView` with `atomicWrites`, so an interrupted write cannot
-  leave a half file that parses as no names at all.
-- A write waits for that file's first read. The panel starts with empty names, so saving before
-  the read lands would overwrite the names on disk with nothing. A display picked from the menu
-  before the read also wins over the file, so a right-click in the moment the panel opens is not
-  silently undone.
+- The panel runs one program. It does not know that ddcutil and Solaar exist, so it cannot put the
+  monitor move after the device moves, and it cannot grow a second copy of the rule that says the
+  monitor goes first.
+- Every change goes through `odisplay`, which is the only writer of the config file. The panel reads
+  the file and asks for it to be changed.
+- The panel builds argv arrays and runs no shell, so even the CLI's own name is never parsed twice.
+  Inside `odisplay` the same holds for what it runs: a device name with spaces in it stays one
+  argument, and a name with a quote in it cannot become a second command.
+- Children run with a fixed `PATH=/usr/bin:/bin` and an environment of their own, so nothing in your
+  session can change what a program name resolves to.
+- `odisplay` times each call out, because ddcutil can hang when an I2C adapter goes away underneath
+  it and Solaar waits on a device that may be asleep: 8 seconds for the display, 10 for each device.
+  The panel's own 40-second watchdog is only a backstop for an `odisplay` that has wedged, and it has
+  to clear the slowest `odisplay` is allowed to be.
+- Output is capped at 4 KB in the panel and 64 KB in `odisplay`, so a runaway child cannot grow
+  either one without limit.
+- Output is stripped of `<`, `>` and `&` before it reaches a label the shell renders itself, and its
+  line breaks become spaces so a wrapped message does not read as one run-together word.
+- A failed switch says what happened in the panel's own words and keeps `odisplay`'s explanation
+  underneath it, rather than showing an exit code on its own. The first line is followed by a colon
+  and the rest by a full stop, so a wrapped message reads as one sentence. Picking a display from the
+  menu clears that failure, since the failure is what pointed at the menu.
+- Exit codes 2 and 3 are kept apart in the wording, because they mean opposite things about where
+  your keyboard is. A switch that could not move the monitor left the devices alone; a switch that
+  moved the monitor and lost the devices did not, and only the button underneath can bring them
+  back.
+- The panel checks for `odisplay` at startup and says where it looked if it is not there, rather than
+  failing on the first click.
+- A change is shown on the button before `odisplay` has been asked, and the file is re-read
+  afterwards, so a refused change cannot stay on screen as though it took.
 - The bar glyph is `U+F26C` (`fa-tv`) in JetBrainsMono Nerd Font, and the panel's column headers
   reuse it over the input buttons and `U+F11C` over the Easy-Switch ones. Icon names in a merged
-  icon font are not guessable from the codepoint: `U+F26A` looks like a "tv" but draws a
-  crescent, and `U+F245` is named `mouse_pointer` but draws an arrow rather than a mouse.
+  icon font are not guessable from the codepoint: `U+F26A` looks like a "tv" but draws a crescent,
+  and `U+F245` is named `mouse_pointer` but draws an arrow rather than a mouse.
 
 ## License
 
 MIT
+
+[cli]: https://github.com/h1st0ry3D/odisplay-cli
