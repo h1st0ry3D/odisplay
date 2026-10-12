@@ -166,6 +166,23 @@ That result line is session only, and closing the panel clears it: a failure sta
 the next switch unless the panel is closed, and the panel is what you close to reach the display
 menu, so it would sit there indefinitely. Reopening starts on a clean line.
 
+### Keyboard shortcuts
+
+A click is one call to `odisplay switch`. A key can make the same call, so a
+shortcut is not a second way of switching that could drift from the first. In
+`~/.config/hypr/bindings.lua`:
+
+```lua
+o.bind("CTRL + ALT + 1", "Odisplay: usbc", "odisplay switch usbc")
+o.bind("CTRL + ALT + 2", "Odisplay: dp", "odisplay switch dp")
+o.bind("CTRL + ALT + 3", "Odisplay: hdmi", "odisplay switch hdmi")
+```
+
+The argument is the input's `key` in the settings file rather than its position,
+so reordering or renaming the rows does not move the keys, and a row hidden from
+the panel is still reachable by key. `odisplay list` prints the keys and
+`omarchy menu keybindings --print` lists what is bound.
+
 ## Settings
 
 One file, owned by `odisplay`:
