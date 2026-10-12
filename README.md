@@ -166,7 +166,7 @@ That result line is session only, and closing the panel clears it: a failure sta
 the next switch unless the panel is closed, and the panel is what you close to reach the display
 menu, so it would sit there indefinitely. Reopening starts on a clean line.
 
-### Keyboard shortcuts
+## Shortcuts
 
 A click is one call to `odisplay switch`. A key can make the same call, so a
 shortcut is not a second way of switching that could drift from the first. In
@@ -180,8 +180,14 @@ o.bind("CTRL + ALT + 3", "Odisplay: hdmi", "odisplay switch hdmi")
 
 The argument is the input's `key` in the settings file rather than its position,
 so reordering or renaming the rows does not move the keys, and a row hidden from
-the panel is still reachable by key. `odisplay list` prints the keys and
-`omarchy menu keybindings --print` lists what is bound.
+the panel is still reachable by key. `odisplay list` prints the keys.
+
+Check what is already bound with `omarchy menu keybindings --print`. A key in use
+has to be released first, with `hl.unbind("SUPER + F")` above the bind that
+replaces it.
+
+The [macOS app](https://github.com/h1st0ry3D/odisplay-mac#shortcuts) has the same
+section for the other machine.
 
 ## Settings
 
