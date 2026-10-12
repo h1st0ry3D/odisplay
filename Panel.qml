@@ -173,6 +173,44 @@ Panel {
         return "0"
     }
 
+    // The action this input is set to, with anything off the list read as
+    // nothing. A stored value that is not one of the three does nothing, which
+    // is what odisplay would do with it too.
+    function powerFor(key) {
+        for (var index = 0; index < root.inputs.length; index++) {
+            if (root.inputs[index].key !== key) continue
+            var chosen = String(root.inputs[index].power === undefined ? "" : root.inputs[index].power)
+            for (var c = 0; c < root.powerChoices.length; c++) {
+                if (root.powerChoices[c].value === chosen) return chosen
+            }
+            return ""
+        }
+        return ""
+    }
+
+    // What the button shows and says for the action in force.
+    function powerChoiceFor(key) {
+        var current = root.powerFor(key)
+        for (var index = 0; index < root.powerChoices.length; index++) {
+            if (root.powerChoices[index].value === current) return root.powerChoices[index]
+        }
+        return root.powerChoices[0]
+    }
+
+    function cyclePower(key) {
+        if (root.busy) return
+        var current = root.powerFor(key)
+        var at = 0
+        for (var index = 0; index < root.powerChoices.length; index++) {
+            if (root.powerChoices[index].value === current) at = index
+        }
+        var next = root.powerChoices[(at + 1) % root.powerChoices.length].value
+        // Shown straight away so the glyph answers the click; odisplay's own
+        // answer follows and wins if the two ever disagree.
+        root.applyLocally(key, "power", next)
+        root.runSet(["set", "power", key, next === "" ? "none" : next])
+    }
+
     function cycleHost(key) {
         if (root.busy) return
         var index = root.hostChoices.indexOf(root.hostFor(key))
@@ -718,6 +756,25 @@ Panel {
      * is edited, and the icons stop pointing at the buttons they label.
      */
     readonly property int hostColumnWidth: Style.space(42)
+    // Narrower than the Easy-Switch button: one glyph, not a word.
+    readonly property int powerColumnWidth: Style.space(30)
+
+    /*
+     * What this machine does with itself after switching away, as a closed
+     * list in the order a click steps through them. The value is what odisplay
+     * stores; the glyph is what the button shows.
+     *
+     * The glyphs are Nerd Font codepoints and are named here rather than
+     * written inline, because a codepoint in the private use area does not say
+     * what it draws. These three were checked by rendering them: a bolt for a
+     * machine that stays on, a crescent for one that sleeps, and the power
+     * symbol for one that switches off.
+     */
+    readonly property var powerChoices: [
+        { value: "",         glyph: "\uf0e7", label: "Stays on" },
+        { value: "sleep",    glyph: "\uf186", label: "Sleep after switching" },
+        { value: "shutdown", glyph: "\uf011", label: "Shut down after switching" }
+    ]
     // One row of the bar icon's menu. Written once because the two lists in it
     // are sized from it, and a height that disagreed with the rows would clip
     // them.
@@ -1061,6 +1118,7 @@ Panel {
                         Text {
                             id: switchHeader
                             anchors.right: parent.right
+                            anchors.rightMargin: root.powerColumnWidth + root.columnGap
                             anchors.verticalCenter: parent.verticalCenter
                             width: root.hostColumnWidth
                             text: "\uf11c"
@@ -1090,6 +1148,7 @@ Panel {
                             // The header icon sits above the Easy-Switch button, and
                             // this is its width. The row's own width comes from it.
                             readonly property int hostWidth: root.hostColumnWidth
+                            readonly property int powerWidth: root.powerColumnWidth
 
                             // A visible gap between the two buttons, so they read as
                             // separate controls rather than one split button.
@@ -1124,9 +1183,34 @@ Panel {
                              * the bar or unable to take the keys. This cannot: it is
                              * two or three characters in the row that is already there.
                              */
+                            /*
+                             * What this machine does with itself once the
+                             * switch has sent the keyboard and mouse away. A
+                             * cycle rather than a menu, like the Easy-Switch
+                             * button beside it, and for the same reason: a
+                             * popup inside a layer-shell panel is a second
+                             * window that can end up behind the bar.
+                             *
+                             * Three states, so the glyph is the whole label
+                             * and the tooltip carries the words.
+                             */
+                            Button {
+                                id: powerButton
+                                anchors.right: parent.right
+                                anchors.top: parent.top
+                                anchors.bottom: parent.bottom
+                                width: inputRow.powerWidth
+                                enabled: !root.busy
+                                bordered: true
+                                text: root.powerChoiceFor(modelData.key).glyph
+                                tooltipText: root.powerChoiceFor(modelData.key).label
+                                onClicked: root.cyclePower(modelData.key)
+                            }
+
                             Button {
                                 id: hostButton
-                                anchors.right: parent.right
+                                anchors.right: powerButton.left
+                                anchors.rightMargin: inputRow.gap
                                 anchors.top: parent.top
                                 anchors.bottom: parent.bottom
                                 width: inputRow.hostWidth
