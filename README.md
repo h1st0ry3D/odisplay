@@ -263,24 +263,24 @@ first device that fails, so the keyboard and mouse never end up split across two
 
 The third button on each row is what this machine does with itself once the
 switch has sent the keyboard and mouse away. It steps through three states, and
-the tooltip says which:
+the tooltip says which. The same setting can be written by hand:
 
-| Glyph | | |
-|---|---|---|
-| bolt | stays on | nothing happens, and the default |
-| crescent | sleeps | `systemctl suspend` |
-| power symbol | shuts down | `systemctl poweroff` |
+| Glyph | State | `power` | What runs |
+|---|---|---|---|
+| bolt | stays on | `none` | nothing, and the default |
+| crescent | sleeps | `sleep` | `systemctl suspend` |
+| power symbol | shuts down | `shutdown` | `systemctl poweroff` |
 
 It runs last, after the monitor and after every device, and only if all of them
 succeeded. Sleeping first would leave the display never moved and the keyboard
 and mouse still here, which is the ordering this panel exists to keep.
 
-A failure is exit 5 rather than 3, because it is the only failure where your
-keyboard is where you wanted it. The panel says so in those words instead of
-sending you to look for a keyboard that is not lost.
+A failed action exits 5 rather than 3, because it is the one failure where your
+keyboard and mouse are where you wanted them. Exit 3 means the keyboard did not
+follow, and the panel says that instead.
 
-Both commands go through polkit and are allowed for the user at the console, so
-neither needs sudo here.
+Both commands go through polkit, which allows them for the user at the console,
+so neither needs sudo here.
 
 The devices are sent in the order `devices` lists them, and the mouse is first by default. The
 order decides what a failure leaves you holding, since the sequence stops at the first one that

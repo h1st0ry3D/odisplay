@@ -173,37 +173,25 @@ Panel {
         return "0"
     }
 
-    // The action this input is set to, with anything off the list read as
-    // nothing. A stored value that is not one of the three does nothing, which
-    // is what odisplay would do with it too.
-    function powerFor(key) {
+    // The action this input is set to, as the entry that names it.
+    //
+    // An input with nothing set, or with a value that is not one of the three,
+    // reads as the first entry, which is doing nothing. That is what odisplay
+    // would do with a value it does not know, so the two agree.
+    function powerChoiceFor(key) {
         for (var index = 0; index < root.inputs.length; index++) {
             if (root.inputs[index].key !== key) continue
-            var chosen = String(root.inputs[index].power === undefined ? "" : root.inputs[index].power)
+            var stored = String(root.inputs[index].power === undefined ? "" : root.inputs[index].power)
             for (var c = 0; c < root.powerChoices.length; c++) {
-                if (root.powerChoices[c].value === chosen) return chosen
+                if (root.powerChoices[c].value === stored) return root.powerChoices[c]
             }
-            return ""
-        }
-        return ""
-    }
-
-    // What the button shows and says for the action in force.
-    function powerChoiceFor(key) {
-        var current = root.powerFor(key)
-        for (var index = 0; index < root.powerChoices.length; index++) {
-            if (root.powerChoices[index].value === current) return root.powerChoices[index]
         }
         return root.powerChoices[0]
     }
 
     function cyclePower(key) {
         if (root.busy) return
-        var current = root.powerFor(key)
-        var at = 0
-        for (var index = 0; index < root.powerChoices.length; index++) {
-            if (root.powerChoices[index].value === current) at = index
-        }
+        var at = root.powerChoices.indexOf(root.powerChoiceFor(key))
         var next = root.powerChoices[(at + 1) % root.powerChoices.length].value
         // Shown straight away so the glyph answers the click; odisplay's own
         // answer follows and wins if the two ever disagree.
@@ -792,7 +780,7 @@ Panel {
         text: "\uf26c"
         // The bar renders this on hover, which is the only place the right-click
         // picker is advertised.
-        tooltipText: "Odisplay — right-click for the display number"
+        tooltipText: "Odisplay: right-click for the display number"
         // Left opens the panel, right the display picker. The button reports which
         // button was pressed, so one widget can carry both without a second target.
         onPressed: function(button) {

@@ -16,7 +16,7 @@ Sleep is usually possible without sudo on both macOS and Linux, but **full shutd
 // macOS sleep, no sudo
 exec.Command("pmset", "sleepnow").Run()
 
-// macOS shutdown — requires sudo/root
+// macOS shutdown: requires sudo/root
 exec.Command("sudo", "shutdown", "-h", "now").Run()
 ```
 
@@ -33,10 +33,10 @@ Behavior depends on the session and distribution:
 On a normal desktop login, `systemd-logind` + PolicyKit often permits the active local user to suspend, reboot, or power off without entering a password. Over SSH, or for another user's session, polkit commonly denies it and you need sudo or a custom polkit rule.
 
 ```go
-// Linux sleep — normally no sudo for an active desktop user
+// Linux sleep: normally no sudo for an active desktop user
 exec.Command("systemctl", "suspend").Run()
 
-// Linux shutdown — may work for active local session, otherwise needs sudo
+// Linux shutdown: may work for an active local session, otherwise needs sudo
 exec.Command("systemctl", "poweroff").Run()
 ```
 
